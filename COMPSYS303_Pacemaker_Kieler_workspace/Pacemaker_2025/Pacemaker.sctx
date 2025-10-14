@@ -1,0 +1,104 @@
+#resource "timing.h"
+#hostcode-c "#include \"timing.h\""
+@ClocksUseSD
+
+scchart Pacemaker {
+  input signal AS, VS
+  output signal AP, VP
+
+  // Internal one-tick event pulses and markers (renamed from common patterns)
+  signal A_EVT, V_EVT, A_REFR, V_REFR
+  bool uri_active
+
+  // Host copies of timing constants (different identifiers from your examples)
+  host "int" T_AVI  = `AVI_VALUE`
+  host "int" T_AEI  = `AEI_VALUE`
+  host "int" T_PVAR = `PVARP_VALUE`
+  host "int" T_VRP  = `VRP_VALUE`
+  host "int" T_LRI  = `LRI_VALUE`
+  host "int" T_URI  = `URI_VALUE`
+
+  // ---------------- Ventricular refractory & V event pulse ----------------
+  // (structure/names differ from example 4: "VRefrac" produces V_EVT only at entry)
+  region VRefrac {
+    clock t = 0
+    initial state idle
+    if VS do V_EVT; t = 0 go to block
+    if pre(VP) do V_EVT; t = 0 go to block
+
+    state block
+    if VS do V_REFR go to block
+    if t >= T_VRP go to idle
+  }
+
+  // ---------------- Atrial refractory & A event pulse ---------------------
+  // (renamed and reordered; AE comes via a small "emit" state)
+  region ARefrac {
+    clock t = 0
+    initial state clear
+    if VS do t = 0 go to hold
+    if pre(VP) do t = 0 go to hold
+    if AS go to emitA
+    if pre(AP) go to emitA
+
+    state hold
+    if AS do A_REFR go to hold
+    if t >= T_PVAR go to clear
+
+    state emitA
+    do A_EVT go to clear
+  }
+
+  // ---------------- AEI (V→A pacing if atrium quiet) ---------------------
+  // (slightly different loop pattern; wait resets on either V_EVT or A_EVT)
+  region AEI {
+    clock t = 0
+    initial state idle
+    if V_EVT do t = 0 go to wait
+
+    state wait
+    if A_EVT go to idle
+    if t >= T_AEI do AP go to idle
+  }
+
+  // ---------------- AVI (A→V pacing with URI gate) -----------------------
+  // (uses a dedicated "uri_hold" instead of inline condition)
+  region AVI {
+    clock t = 0
+    initial state idle
+    if A_EVT do t = 0 go to watch
+
+    state watch
+    if V_EVT go to idle
+    if t >= T_AVI go to uri_hold
+
+    state uri_hold
+    if V_EVT go to idle
+    if uri_active == 0 do VP go to idle
+  }
+
+  // ---------------- LRI (backup ventricular rate) ------------------------
+  // Gate by URI, just like AVI
+  region LRI {
+    clock t = 0
+    initial state wait
+    if V_EVT do t = 0 go to wait
+    if t >= T_LRI go to lri_hold
+
+    state lri_hold
+    if V_EVT go to wait
+    if uri_active == 0 do VP; t = 0 go to wait
+}
+
+  // ---------------- URI (upper rate; blocks VP while active) -------------
+  // (boolean named uri_active; re-asserted on any V_EVT)
+  region URI {
+    clock t = 0
+    initial state idle
+    if V_EVT do uri_active = 1; t = 0 go to busy
+
+    state busy
+    if V_EVT do t = 0 go to busy
+    if t >= T_URI do uri_active = 0 go to idle
+  }
+}
