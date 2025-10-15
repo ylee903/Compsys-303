@@ -1,17 +1,70 @@
-16:38:14 **** Incremental Build of configuration Nios II for project pacemakerniosproject ****
+16:44:07 **** Incremental Build of configuration Nios II for project pacemakerniosproject ****
 make all 
 Info: Building ../pacemakerniosproject_bsp/
 C:/intelFPGA/18.1/nios2eds/bin/gnu/H-x86_64-mingw32/bin/make --no-print-directory -C ../pacemakerniosproject_bsp/
 [BSP build complete]
-Info: Linking pacemakerniosproject.elf
-nios2-elf-g++  -T'../pacemakerniosproject_bsp//linker.x' -msys-crt0='../pacemakerniosproject_bsp//obj/HAL/src/crt0.o' -msys-lib=hal_bsp -L../pacemakerniosproject_bsp/   -Wl,-Map=pacemakerniosproject.map   -O0 -g -Wall   -mno-hw-div -mhw-mul -mno-hw-mulx -mgpopt=global  -o pacemakerniosproject.elf obj/default/Pacemaker.o obj/default/hello_world.o obj/default/main.o -lm -msys-lib=m
-obj/default/main.o: In function `main':
-C:\Users\ylee903\github\Compsys-303\project\DE2-115\software\pacemakerniosproject/main.c:56: undefined reference to `alt_timestamp_start'
-C:\Users\ylee903\github\Compsys-303\project\DE2-115\software\pacemakerniosproject/main.c:59: undefined reference to `alt_timestamp'
-C:\Users\ylee903\github\Compsys-303\project\DE2-115\software\pacemakerniosproject/main.c:81: undefined reference to `alt_timestamp'
-C:\Users\ylee903\github\Compsys-303\project\DE2-115\software\pacemakerniosproject/main.c:85: undefined reference to `alt_timestamp_freq'
-collect2.exe: error: ld returned 1 exit status
-make: *** [pacemakerniosproject.elf] Error 1
+Info: Compiling main.c to obj/default/main.o
+nios2-elf-gcc -xc -MP -MMD -c -I../pacemakerniosproject_bsp//HAL/inc -I../pacemakerniosproject_bsp/ -I../pacemakerniosproject_bsp//drivers/inc  -pipe -D__hal__ -DALT_NO_INSTRUCTION_EMULATION -DALT_SINGLE_THREADED    -O0 -g -Wall   -mno-hw-div -mhw-mul -mno-hw-mulx -mgpopt=global  -o obj/default/main.o main.c
+main.c: In function 'main':
+main.c:10:5: warning: implicit declaration of function 'reset' [-Wimplicit-function-declaration]
+     reset(&pacemaker_data);
+     ^
+main.c:10:12: error: 'pacemaker_data' undeclared (first use in this function)
+     reset(&pacemaker_data);
+            ^
+main.c:10:12: note: each undeclared identifier is reported only once for each function it appears in
+main.c:18:5: error: 'uart_fd' undeclared (first use in this function)
+     uart_fd = open(UART_NAME, O_RDWR | O_NONBLOCK);
+     ^
+main.c:18:15: warning: implicit declaration of function 'open' [-Wimplicit-function-declaration]
+     uart_fd = open(UART_NAME, O_RDWR | O_NONBLOCK);
+               ^
+main.c:18:20: error: 'UART_NAME' undeclared (first use in this function)
+     uart_fd = open(UART_NAME, O_RDWR | O_NONBLOCK);
+                    ^
+main.c:18:31: error: 'O_RDWR' undeclared (first use in this function)
+     uart_fd = open(UART_NAME, O_RDWR | O_NONBLOCK);
+                               ^
+main.c:18:40: error: 'O_NONBLOCK' undeclared (first use in this function)
+     uart_fd = open(UART_NAME, O_RDWR | O_NONBLOCK);
+                                        ^
+main.c:20:9: warning: implicit declaration of function 'printf' [-Wimplicit-function-declaration]
+         printf("Error: Failed to open UART device %s\n", UART_NAME);
+         ^
+main.c:20:9: warning: incompatible implicit declaration of built-in function 'printf'
+main.c:20:9: note: include '<stdio.h>' or provide a declaration of 'printf'
+main.c:22:9: warning: incompatible implicit declaration of built-in function 'printf'
+         printf("Successfully opened UART device %s\n", UART_NAME);
+         ^
+main.c:22:9: note: include '<stdio.h>' or provide a declaration of 'printf'
+main.c:30:28: warning: implicit declaration of function 'IORD_ALTERA_AVALON_PIO_DATA' [-Wimplicit-function-declaration]
+         alt_u32 switches = IORD_ALTERA_AVALON_PIO_DATA(SWITCHES_BASE);
+                            ^
+main.c:30:56: error: 'SWITCHES_BASE' undeclared (first use in this function)
+         alt_u32 switches = IORD_ALTERA_AVALON_PIO_DATA(SWITCHES_BASE);
+                                                        ^
+main.c:31:9: warning: implicit declaration of function 'IOWR_ALTERA_AVALON_PIO_DATA' [-Wimplicit-function-declaration]
+         IOWR_ALTERA_AVALON_PIO_DATA(LEDS_RED_BASE, (switches & 0x03));
+         ^
+main.c:31:37: error: 'LEDS_RED_BASE' undeclared (first use in this function)
+         IOWR_ALTERA_AVALON_PIO_DATA(LEDS_RED_BASE, (switches & 0x03));
+                                     ^
+main.c:39:60: error: 'KEYS_BASE' undeclared (first use in this function)
+                 alt_u32 keys = IORD_ALTERA_AVALON_PIO_DATA(KEYS_BASE);
+                                                            ^
+main.c:50:17: warning: implicit declaration of function 'tick' [-Wimplicit-function-declaration]
+                 tick(&pacemaker_data);
+                 ^
+main.c:55:45: error: 'LEDS_GREEN_BASE' undeclared (first use in this function)
+                 IOWR_ALTERA_AVALON_PIO_DATA(LEDS_GREEN_BASE, green_leds);
+                                             ^
+main.c:62:34: warning: implicit declaration of function 'read' [-Wimplicit-function-declaration]
+                 int bytes_read = read(uart_fd, &received_char, 1);
+                                  ^
+main.c:68:40: warning: implicit declaration of function 'write' [-Wimplicit-function-declaration]
+                 if (pacemaker_data.AP) write(uart_fd, "A", 1);
+                                        ^
+make: *** [obj/default/main.o] Error 1
 
-16:38:14 Build Finished (took 686ms)
+16:44:08 Build Finished (took 640ms)
 
