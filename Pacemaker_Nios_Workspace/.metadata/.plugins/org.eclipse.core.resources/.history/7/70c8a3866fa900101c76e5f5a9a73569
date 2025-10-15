@@ -1,0 +1,72 @@
+#include "system.h"
+#include "altera_avalon_pio_regs.h"
+#include "Pacemaker.h"
+#include "timing.h"
+#include "sys/alt_stdio.h"
+#include "sys/alt_irq.h"
+#include "alt_types.h"
+#include "altera_avalon_timer_regs.h"
+#include "altera_avalon_pio_regs.h"
+
+volatile int tick = 0;
+
+// simple 1 ms timer ISR
+static void timer_isr(void* context, alt_u32 id) {
+    tick = 1;
+    IOWR_ALTERA_AVALON_TIMER_STATUS(TIMER_0_BASE, 0);
+}
+
+
+
+
+
+// ======= I/O helpers (adjust *_BASE if your names differ) =======
+static inline uint32_t read_keys_raw(void) {
+    return IORD_ALTERA_AVALON_PIO_DATA(KEY_BASE);  // active-low
+}
+static inline void write_leds(uint32_t v) {
+    IOWR_ALTERA_AVALON_PIO_DATA(LEDR_BASE, v);
+}
+
+// ======= simple debounce + edge detect for KEY1/KEY0 =======
+// We’ll generate 1-tick pulses: AS on KEY1 rising (press), VS on KEY0 rising.
+typedef struct {
+    uint8_t hist;     // 8-sample history
+    uint8_t stable;   // debounced level (0/1)
+} Debounce;
+
+static void deb_step(Debounce* d, uint8_t sample) {
+    d->hist = (d->hist << 1) | (sample & 1);
+    // consider pressed if last 8 samples were all 1s
+    d->stable = (d->hist == 0xFF) ? 1 : (d->hist == 0x00 ? 0 : d->stable);
+}
+
+static uint8_t edge_rising(uint8_t prev, uint8_t now) { return (prev == 0 && now == 1); }
+
+// ======= pulse stretcher so LED blips are visible =======
+typedef struct { int cnt_ms; } Pulse;
+static void pulse_fire(Pulse* p, int dur_ms){ p->cnt_ms = dur_ms; }
+static int  pulse_out (Pulse* p){ if(p->cnt_ms>0){ p->cnt_ms--; return 1;} return 0; }
+
+
+
+
+
+
+int main() {
+    // timer init
+    IOWR_ALTERA_AVALON_TIMER_CONTROL(TIMER_0_BASE, 0x8); // stop
+    IOWR_ALTERA_AVALON_TIMER_PERIODL(TIMER_0_BASE, 50000); // 1 ms @ 50 MHz
+    IOWR_ALTERA_AVALON_TIMER_CONTROL(TIMER_0_BASE, 0x7); // start + interrupt + cont
+    alt_ic_isr_register(TIMER_0_IRQ_INTERRUPT_CONTROLLER_ID, TIMER_0_IRQ, timer_isr, 0, 0);
+
+    while (1) {
+        if (tick) {
+            tick = 0;
+
+            // TODO: read inputs (AS/VS)
+            // TODO: call SCCharts step
+            // TODO: drive outputs (AP/VP)
+        }
+    }
+}

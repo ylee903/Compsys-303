@@ -1,0 +1,33 @@
+#include "system.h"
+#include "altera_avalon_pio_regs.h"
+#include "Pacemaker.h"
+#include "timing.h"
+#include "sys/alt_stdio.h"
+#include "sys/alt_irq.h"
+#include "alt_types.h"
+
+volatile int tick_flag = 0;
+
+// simple 1 ms timer ISR
+static void timer_isr(void* context, alt_u32 id) {
+    tick = 1;
+    IOWR_ALTERA_AVALON_TIMER_STATUS(TIMER_0_BASE, 0);
+}
+
+int main() {
+    // timer init
+    IOWR_ALTERA_AVALON_TIMER_CONTROL(TIMER_0_BASE, 0x8); // stop
+    IOWR_ALTERA_AVALON_TIMER_PERIODL(TIMER_0_BASE, 50000); // 1 ms @ 50 MHz
+    IOWR_ALTERA_AVALON_TIMER_CONTROL(TIMER_0_BASE, 0x7); // start + interrupt + cont
+    alt_ic_isr_register(TIMER_0_IRQ_INTERRUPT_CONTROLLER_ID, TIMER_0_IRQ, timer_isr, 0, 0);
+
+    while (1) {
+        if (tick) {
+            tick = 0;
+
+            // TODO: read inputs (AS/VS)
+            // TODO: call SCCharts step
+            // TODO: drive outputs (AP/VP)
+        }
+    }
+}

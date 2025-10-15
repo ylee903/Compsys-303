@@ -1,7 +1,7 @@
-Analysis & Synthesis Status : Failed - Wed Aug 06 11:34:31 2025
+Analysis & Synthesis Status : Failed - Wed Oct 15 15:24:30 2025
 Quartus Prime Version : 18.1.0 Build 625 09/12/2018 SJ Standard Edition
 Revision Name : CS303-Lab1-2
-Top-level Entity Name : CS303-Lab1-2
+Top-level Entity Name : lab1
 Family : Cyclone IV E
 Total logic elements : N/A until Partition Merge
     Total combinational functions : N/A until Partition Merge

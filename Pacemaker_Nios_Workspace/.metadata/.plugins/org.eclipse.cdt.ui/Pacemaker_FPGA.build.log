@@ -1,0 +1,55 @@
+15:49:36 **** Incremental Build of configuration Nios II for project Pacemaker_FPGA ****
+make all 
+Info: Building ../Pacemaker_FPGA_bsp/
+C:/intelFPGA/18.1/nios2eds/bin/gnu/H-x86_64-mingw32/bin/make --no-print-directory -C ../Pacemaker_FPGA_bsp/
+[BSP build complete]
+Info: Compiling src/main.c to obj/default/src/main.o
+nios2-elf-gcc -xc -MP -MMD -c -I../Pacemaker_FPGA_bsp//HAL/inc -I../Pacemaker_FPGA_bsp/ -I../Pacemaker_FPGA_bsp//drivers/inc  -pipe -D__hal__ -DALT_NO_INSTRUCTION_EMULATION -DALT_SINGLE_THREADED    -O0 -g -Wall   -mno-hw-div -mhw-mul -mno-hw-mulx -mgpopt=global  -o obj/default/src/main.o src/main.c
+In file included from ../Pacemaker_FPGA_bsp//drivers/inc/altera_avalon_timer_regs.h:34:0,
+                 from src/main.c:7:
+src/main.c: In function 'read_switches':
+src/main.c:32:40: error: 'SW_BASE' undeclared (first use in this function)
+     return IORD_ALTERA_AVALON_PIO_DATA(SW_BASE);
+                                        ^
+../Pacemaker_FPGA_bsp//HAL/inc/io.h:70:23: note: in definition of macro '__IO_CALC_ADDRESS_NATIVE'
+   ((void *)(((alt_u8*)BASE) + ((REGNUM) * (SYSTEM_BUS_WIDTH/8))))
+                       ^
+../Pacemaker_FPGA_bsp//drivers/inc/altera_avalon_pio_regs.h:37:55: note: in expansion of macro 'IORD'
+ #define IORD_ALTERA_AVALON_PIO_DATA(base)             IORD(base, 0) 
+                                                       ^
+src/main.c:32:12: note: in expansion of macro 'IORD_ALTERA_AVALON_PIO_DATA'
+     return IORD_ALTERA_AVALON_PIO_DATA(SW_BASE);
+            ^
+src/main.c:32:40: note: each undeclared identifier is reported only once for each function it appears in
+     return IORD_ALTERA_AVALON_PIO_DATA(SW_BASE);
+                                        ^
+../Pacemaker_FPGA_bsp//HAL/inc/io.h:70:23: note: in definition of macro '__IO_CALC_ADDRESS_NATIVE'
+   ((void *)(((alt_u8*)BASE) + ((REGNUM) * (SYSTEM_BUS_WIDTH/8))))
+                       ^
+../Pacemaker_FPGA_bsp//drivers/inc/altera_avalon_pio_regs.h:37:55: note: in expansion of macro 'IORD'
+ #define IORD_ALTERA_AVALON_PIO_DATA(base)             IORD(base, 0) 
+                                                       ^
+src/main.c:32:12: note: in expansion of macro 'IORD_ALTERA_AVALON_PIO_DATA'
+     return IORD_ALTERA_AVALON_PIO_DATA(SW_BASE);
+            ^
+src/main.c: In function 'write_leds':
+src/main.c:36:33: error: 'LEDS_BASE' undeclared (first use in this function)
+     IOWR_ALTERA_AVALON_PIO_DATA(LEDS_BASE, v);
+                                 ^
+../Pacemaker_FPGA_bsp//HAL/inc/io.h:70:23: note: in definition of macro '__IO_CALC_ADDRESS_NATIVE'
+   ((void *)(((alt_u8*)BASE) + ((REGNUM) * (SYSTEM_BUS_WIDTH/8))))
+                       ^
+../Pacemaker_FPGA_bsp//drivers/inc/altera_avalon_pio_regs.h:38:55: note: in expansion of macro 'IOWR'
+ #define IOWR_ALTERA_AVALON_PIO_DATA(base, data)       IOWR(base, 0, data)
+                                                       ^
+src/main.c:36:5: note: in expansion of macro 'IOWR_ALTERA_AVALON_PIO_DATA'
+     IOWR_ALTERA_AVALON_PIO_DATA(LEDS_BASE, v);
+     ^
+src/main.c: In function 'read_switches':
+src/main.c:33:1: warning: control reaches end of non-void function [-Wreturn-type]
+ }
+ ^
+make: *** [obj/default/src/main.o] Error 1
+
+15:49:38 Build Finished (took 1s.982ms)
+

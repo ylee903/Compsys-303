@@ -1,5 +1,5 @@
 Analysis & Synthesis report for CS303-Lab1-2
-Wed Aug 06 11:34:31 2025
+Wed Oct 15 15:24:30 2025
 Quartus Prime Version 18.1.0 Build 625 09/12/2018 SJ Standard Edition
 
 
@@ -36,10 +36,10 @@ refer to the applicable agreement for further details.
 +--------------------------------------------------------------------------------------+
 ; Analysis & Synthesis Summary                                                         ;
 +------------------------------------+-------------------------------------------------+
-; Analysis & Synthesis Status        ; Failed - Wed Aug 06 11:34:31 2025               ;
+; Analysis & Synthesis Status        ; Failed - Wed Oct 15 15:24:30 2025               ;
 ; Quartus Prime Version              ; 18.1.0 Build 625 09/12/2018 SJ Standard Edition ;
 ; Revision Name                      ; CS303-Lab1-2                                    ;
-; Top-level Entity Name              ; CS303-Lab1-2                                    ;
+; Top-level Entity Name              ; lab1                                            ;
 ; Family                             ; Cyclone IV E                                    ;
 ; Total logic elements               ; N/A until Partition Merge                       ;
 ;     Total combinational functions  ; N/A until Partition Merge                       ;
@@ -59,7 +59,7 @@ refer to the applicable agreement for further details.
 ; Option                                                           ; Setting            ; Default Value      ;
 +------------------------------------------------------------------+--------------------+--------------------+
 ; Device                                                           ; EP4CE115F29C7      ;                    ;
-; Top-level entity name                                            ; CS303-Lab1-2       ; CS303-Lab1-2       ;
+; Top-level entity name                                            ; lab1               ; CS303-Lab1-2       ;
 ; Family name                                                      ; Cyclone IV E       ; Cyclone V          ;
 ; Use smart compilation                                            ; Off                ; Off                ;
 ; Enable parallel Assembler and Timing Analyzer during compilation ; On                 ; On                 ;
@@ -161,14 +161,17 @@ refer to the applicable agreement for further details.
 Info: *******************************************************************
 Info: Running Quartus Prime Analysis & Synthesis
     Info: Version 18.1.0 Build 625 09/12/2018 SJ Standard Edition
-    Info: Processing started: Wed Aug 06 11:34:26 2025
+    Info: Processing started: Wed Oct 15 15:24:25 2025
 Info: Command: quartus_map --read_settings_files=on --write_settings_files=off CS303-Lab1-2 -c CS303-Lab1-2
 Warning (18236): Number of processors has not been specified which may cause overloading on shared machines.  Set the global assignment NUM_PARALLEL_PROCESSORS in your QSF to an appropriate value for best performance.
 Info (20030): Parallel compilation is enabled and will use 16 of the 16 processors detected
-Error (12007): Top-level design entity "CS303-Lab1-2" is undefined
+Info (12021): Found 1 design units, including 1 entities, in source file /users/ylee903/compsys 303/compsys-303/old files from lab/lab2/inside is working lab 2 files, not lab 1/cs303-lab1/lab1.bdf
+    Info (12023): Found entity 1: lab1
+Info (12127): Elaborating entity "lab1" for the top level hierarchy
+Error (12006): Node instance "inst1" instantiates undefined entity "nios2_system". Ensure that required library paths are specified correctly, define the specified entity, or change the instantiation. If this entity represents Intel FPGA or third-party IP, generate the synthesis files for the IP.
 Error: Quartus Prime Analysis & Synthesis was unsuccessful. 1 error, 1 warning
-    Error: Peak virtual memory: 4725 megabytes
-    Error: Processing ended: Wed Aug 06 11:34:31 2025
+    Error: Peak virtual memory: 4724 megabytes
+    Error: Processing ended: Wed Oct 15 15:24:30 2025
     Error: Elapsed time: 00:00:05
     Error: Total CPU time (on all processors): 00:00:11
 
