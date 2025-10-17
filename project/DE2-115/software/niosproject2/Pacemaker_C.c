@@ -125,6 +125,7 @@ static void PMc_tick_1ms(PacemakerC *s)
   if (s->AS)
   {
     s->PVARP = PVARP_VALUE;      /* start/refresh atrial refractory */
+    s->AEI = AEI_VALUE;          /* restart atrial escape - we just saw natural A! */
     s->AVI = AVI_VALUE;          /* start A→V interval */
     s->seen_AS_since_last_V = 1; /* remember intrinsic atrial activity */
   }
