@@ -1,0 +1,146 @@
+14:11:07 **** Build of configuration Nios II for project niosproject2 ****
+make all 
+Info: Building ../niosproject2_bsp/
+C:/intelFPGA/18.1/nios2eds/bin/gnu/H-x86_64-mingw32/bin/make --no-print-directory -C ../niosproject2_bsp/
+[BSP build complete]
+Info: Compiling Pacemaker.c to obj/default/Pacemaker.o
+nios2-elf-gcc -xc -MP -MMD -c -I../niosproject2_bsp//HAL/inc -I../niosproject2_bsp/ -I../niosproject2_bsp//drivers/inc  -pipe -D__hal__ -DALT_NO_INSTRUCTION_EMULATION -DALT_SINGLE_THREADED    -O0 -g -Wall   -mno-hw-div -mhw-mul -mno-hw-mulx -mgpopt=global  -o obj/default/Pacemaker.o Pacemaker.c
+Pacemaker.c: In function 'logic':
+Pacemaker.c:49:21: warning: suggest parentheses around '&&' within '||' [-Wparentheses]
+   d->_g13 = d->_g10 && d->_cg12 || d->_g11 && d->_cg14;
+                     ^
+Pacemaker.c:66:43: warning: suggest parentheses around '&&' within '||' [-Wparentheses]
+   d->_g27 = d->_GO || d->_g22 || d->_g217 && !d->_cg28;
+                                           ^
+Pacemaker.c:101:20: warning: suggest parentheses around '&&' within '||' [-Wparentheses]
+   d->_g29 = d->_g5 && !d->_cg8 || d->_g10 && !d->_cg12;
+                    ^
+Pacemaker.c:104:20: warning: suggest parentheses around '&&' within '||' [-Wparentheses]
+   d->_g8 = d->_g11 && !d->_cg14 || d->_g12 && !d->_cg17;
+                    ^
+Pacemaker.c:105:32: warning: suggest parentheses around '&&' within '||' [-Wparentheses]
+   d->_g17 = d->_g26 || d->_g23 && !d->_cg23;
+                                ^
+Pacemaker.c:133:21: warning: suggest parentheses around '&&' within '||' [-Wparentheses]
+   d->_g42 = d->_g39 && d->_cg41 || d->_g40 && d->_cg43;
+                     ^
+Pacemaker.c:158:53: warning: suggest parentheses around '&&' within '||' [-Wparentheses]
+   d->_g62 = d->_GO || d->_g51 || d->_g42 || d->_g63 && !d->_cg63;
+                                                     ^
+Pacemaker.c:185:21: warning: suggest parentheses around '&&' within '||' [-Wparentheses]
+   d->_g34 = d->_g55 && !d->_cg37 || d->_g39 && !d->_cg41;
+                     ^
+Pacemaker.c:188:21: warning: suggest parentheses around '&&' within '||' [-Wparentheses]
+   d->_g37 = d->_g40 && !d->_cg43 || d->_g58 && !d->_cg46;
+                     ^
+Pacemaker.c:189:32: warning: suggest parentheses around '&&' within '||' [-Wparentheses]
+   d->_g41 = d->_g57 || d->_g52 && !d->_cg52;
+                                ^
+Pacemaker.c:238:21: warning: suggest parentheses around '&&' within '||' [-Wparentheses]
+   d->_g76 = d->_g71 && d->_cg72 || d->_g75 && d->_cg76;
+                     ^
+Pacemaker.c:239:32: warning: suggest parentheses around '&&' within '||' [-Wparentheses]
+   d->_g72 = d->_g69 || d->_g64 && !d->_cg84;
+                                ^
+Pacemaker.c:253:56: warning: suggest parentheses around '&&' within '||' [-Wparentheses]
+   d->_g83_e2 = d->_GO || d->_g82 || d->_g73 || d->_g81 && !d->_cg68;
+                                                        ^
+Pacemaker.c:293:21: warning: suggest parentheses around '&&' within '||' [-Wparentheses]
+   d->_g96 = d->_g95 && d->_cg96 || d->_g102 && d->_cg100;
+                     ^
+Pacemaker.c:294:34: warning: suggest parentheses around '&&' within '||' [-Wparentheses]
+   d->_g100 = d->_g105 || d->_g88 && !d->_cg108;
+                                  ^
+Pacemaker.c:343:23: warning: suggest parentheses around '&&' within '||' [-Wparentheses]
+   d->_g159 = d->_g162 && d->_cg158 || d->_g157 && d->_cg160;
+                       ^
+Pacemaker.c:360:70: warning: suggest parentheses around '&&' within '||' [-Wparentheses]
+   d->_g159 = d->_GO || d->_g106 || d->_g97 || d->_g159_e1 || d->_g87 && !d->_cg92;
+                                                                      ^
+Pacemaker.c:365:38: warning: suggest parentheses around '&&' within '||' [-Wparentheses]
+   d->_g111 = d->_g114 || d->_g168_e2 && !d->_cg116;
+                                      ^
+Pacemaker.c:394:23: warning: suggest parentheses around '&&' within '||' [-Wparentheses]
+   d->_g127 = d->_g124 && d->_cg126 || d->_g125 && d->_cg128;
+                       ^
+Pacemaker.c:429:23: warning: suggest parentheses around '&&' within '||' [-Wparentheses]
+   d->_g140 = d->_g144 && !d->_cg122 || d->_g124 && !d->_cg126;
+                       ^
+Pacemaker.c:432:23: warning: suggest parentheses around '&&' within '||' [-Wparentheses]
+   d->_g126 = d->_g125 && !d->_cg128 || d->_g122 && !d->_cg131;
+                       ^
+Pacemaker.c:433:35: warning: suggest parentheses around '&&' within '||' [-Wparentheses]
+   d->_g131 = d->_g146 || d->_g137 && !d->_cg137;
+                                   ^
+Pacemaker.c:438:38: warning: suggest parentheses around '&&' within '||' [-Wparentheses]
+   d->_g120 = d->_g128 || d->_g136_e2 && !d->_cg145;
+                                      ^
+Pacemaker.c:439:45: warning: suggest parentheses around '&&' within '||' [-Wparentheses]
+   d->_g137 = d->_GO || d->_g168 || d->_g107 && !d->_cg150;
+                                             ^
+Pacemaker.c:460:23: warning: suggest parentheses around '&&' within '||' [-Wparentheses]
+   d->_g150 = d->_g141 && !d->_cg154 || d->_g162 && !d->_cg158;
+                       ^
+Pacemaker.c:463:23: warning: suggest parentheses around '&&' within '||' [-Wparentheses]
+   d->_g171 = d->_g157 && !d->_cg160 || d->_g173 && !d->_cg163;
+                       ^
+Pacemaker.c:464:35: warning: suggest parentheses around '&&' within '||' [-Wparentheses]
+   d->_g172 = d->_g145 || d->_g169 && !d->_cg169;
+                                   ^
+Info: Compiling hello_world.c to obj/default/hello_world.o
+nios2-elf-gcc -xc -MP -MMD -c -I../niosproject2_bsp//HAL/inc -I../niosproject2_bsp/ -I../niosproject2_bsp//drivers/inc  -pipe -D__hal__ -DALT_NO_INSTRUCTION_EMULATION -DALT_SINGLE_THREADED    -O0 -g -Wall   -mno-hw-div -mhw-mul -mno-hw-mulx -mgpopt=global  -o obj/default/hello_world.o hello_world.c
+Info: Compiling main.c to obj/default/main.o
+nios2-elf-gcc -xc -MP -MMD -c -I../niosproject2_bsp//HAL/inc -I../niosproject2_bsp/ -I../niosproject2_bsp//drivers/inc  -pipe -D__hal__ -DALT_NO_INSTRUCTION_EMULATION -DALT_SINGLE_THREADED    -O0 -g -Wall   -mno-hw-div -mhw-mul -mno-hw-mulx -mgpopt=global  -o obj/default/main.o main.c
+Info: Linking niosproject2.elf
+nios2-elf-g++  -T'../niosproject2_bsp//linker.x' -msys-crt0='../niosproject2_bsp//obj/HAL/src/crt0.o' -msys-lib=hal_bsp -L../niosproject2_bsp/   -Wl,-Map=niosproject2.map   -O0 -g -Wall   -mno-hw-div -mhw-mul -mno-hw-mulx -mgpopt=global  -o niosproject2.elf obj/default/Pacemaker.o obj/default/hello_world.o obj/default/main.o -lm -msys-lib=m
+nios2-elf-insert niosproject2.elf --thread_model hal --cpu_name cpu --qsys true --simulation_enabled false --stderr_dev jtag_uart --stdin_dev jtag_uart --stdout_dev jtag_uart --sopc_system_name nios2_system --quartus_project_dir "C:/Users/ylee903/Compsys-303/project/DE2-115" --sopcinfo C:/Users/ylee903/Compsys-303/project/DE2-115/software/niosproject2_bsp/../../nios2_system.sopcinfo
+Info: (niosproject2.elf) 99 KBytes program size (code + initialized data).
+Info:                    8085 KBytes free for stack + heap.
+Info: Creating niosproject2.objdump
+nios2-elf-objdump --disassemble --syms --all-header --source niosproject2.elf >niosproject2.objdump
+[niosproject2 build complete]
+14:11:31 **** Build of configuration Nios II for project niosproject2 ****
+make all 
+Info: Building ../niosproject2_bsp/
+C:/intelFPGA/18.1/nios2eds/bin/gnu/H-x86_64-mingw32/bin/make --no-print-directory -C ../niosproject2_bsp/
+[BSP build complete]
+[niosproject2 build complete]
+14:11:32 **** Incremental Build of configuration Nios II for project niosproject2 ****
+make all 
+Info: Building ../niosproject2_bsp/
+C:/intelFPGA/18.1/nios2eds/bin/gnu/H-x86_64-mingw32/bin/make --no-print-directory -C ../niosproject2_bsp/
+[BSP build complete]
+[niosproject2 build complete]
+14:11:38 **** Build of configuration Nios II for project niosproject2 ****
+make all 
+Info: Building ../niosproject2_bsp/
+C:/intelFPGA/18.1/nios2eds/bin/gnu/H-x86_64-mingw32/bin/make --no-print-directory -C ../niosproject2_bsp/
+[BSP build complete]
+[niosproject2 build complete]
+14:11:40 **** Incremental Build of configuration Nios II for project niosproject2 ****
+make all 
+Info: Building ../niosproject2_bsp/
+C:/intelFPGA/18.1/nios2eds/bin/gnu/H-x86_64-mingw32/bin/make --no-print-directory -C ../niosproject2_bsp/
+[BSP build complete]
+[niosproject2 build complete]
+14:18:15 **** Build of configuration Nios II for project niosproject2 ****
+make all 
+Info: Building ../niosproject2_bsp/
+C:/intelFPGA/18.1/nios2eds/bin/gnu/H-x86_64-mingw32/bin/make --no-print-directory -C ../niosproject2_bsp/
+[BSP build complete]
+[niosproject2 build complete]
+14:18:21 **** Incremental Build of configuration Nios II for project niosproject2 ****
+make all 
+Info: Building ../niosproject2_bsp/
+C:/intelFPGA/18.1/nios2eds/bin/gnu/H-x86_64-mingw32/bin/make --no-print-directory -C ../niosproject2_bsp/
+[BSP build complete]
+Info: Compiling main.c to obj/default/main.o
+nios2-elf-gcc -xc -MP -MMD -c -I../niosproject2_bsp//HAL/inc -I../niosproject2_bsp/ -I../niosproject2_bsp//drivers/inc  -pipe -D__hal__ -DALT_NO_INSTRUCTION_EMULATION -DALT_SINGLE_THREADED    -O0 -g -Wall   -mno-hw-div -mhw-mul -mno-hw-mulx -mgpopt=global  -o obj/default/main.o main.c
+Info: Linking niosproject2.elf
+nios2-elf-g++  -T'../niosproject2_bsp//linker.x' -msys-crt0='../niosproject2_bsp//obj/HAL/src/crt0.o' -msys-lib=hal_bsp -L../niosproject2_bsp/   -Wl,-Map=niosproject2.map   -O0 -g -Wall   -mno-hw-div -mhw-mul -mno-hw-mulx -mgpopt=global  -o niosproject2.elf obj/default/Pacemaker.o obj/default/hello_world.o obj/default/main.o -lm -msys-lib=m
+nios2-elf-insert niosproject2.elf --thread_model hal --cpu_name cpu --qsys true --simulation_enabled false --stderr_dev jtag_uart --stdin_dev jtag_uart --stdout_dev jtag_uart --sopc_system_name nios2_system --quartus_project_dir "C:/Users/ylee903/Compsys-303/project/DE2-115" --sopcinfo C:/Users/ylee903/Compsys-303/project/DE2-115/software/niosproject2_bsp/../../nios2_system.sopcinfo
+Info: (niosproject2.elf) 99 KBytes program size (code + initialized data).
+Info:                    8085 KBytes free for stack + heap.
+Info: Creating niosproject2.objdump
+nios2-elf-objdump --disassemble --syms --all-header --source niosproject2.elf >niosproject2.objdump
+[niosproject2 build complete]
