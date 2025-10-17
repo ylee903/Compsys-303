@@ -141,6 +141,7 @@ static void PMc_tick_1ms(PacemakerC *s)
     s->AP_led_ms = s->led_pulse_ms;
     /* AP behaves like an atrial event */
     s->PVARP = PVARP_VALUE;      /* begin atrial refractory after AP */
+    s->AEI = AEI_VALUE;          /* restart AEI - don't pace atrium again immediately! */
     s->AVI = AVI_VALUE;          /* enable A→V tracking */
     s->seen_AS_since_last_V = 1; /* treat AP as an A-event */
   }
