@@ -1,0 +1,181 @@
+/*
+ * main.c — COMPSYS 303 Pacemaker top-level (SCCharts + UART/Buttons)
+ *
+ * Interface expected by the virtual heart:
+ *   - Send ASCII 'A' when AP (atrial pace) occurs
+ *   - Send ASCII 'V' when VP (ventricular pace) occurs
+ *   - Receive ASCII 'a'/'A' to assert AS (atrial sense) for one tick
+ *   - Receive ASCII 'v'/'V' to assert VS (ventricular sense) for one tick
+ *
+ * Board Controls (per assignment brief / lab handout):
+ *   SW0: 0 = SCCharts   | 1 = C implementation (reserved here)
+ *   SW1: 0 = Buttons    | 1 = UART (PC Virtual Heart)
+ *
+ * Board I/O:
+ *   KEY0 -> VS (active-low)
+ *   KEY1 -> AS (active-low)
+ *   LEDG0 <- VP pulse indicator
+ *   LEDG1 <- AP pulse indicator
+ *   LEDR[1:0] mirror SW[1:0] for quick sanity
+ *
+ * Console:
+ *   - STDOUT/ERR are expected to be /dev/jtag_uart (Nios II Console) for debug prints
+ *   - Hardware UART device is /dev/uart at 115200 8-N-1 (no flow)
+ */
+
+#include <stdio.h>
+#include <string.h>
+#include <system.h>
+#include "Pacemaker.h"   // generated SCCharts header (TickData, reset, tick)
+#include "timing.h"      // AVI_VALUE, AEI_VALUE, ...
+#include <altera_avalon_pio_regs.h>
+#include <alt_types.h>
+#include <sys/alt_irq.h>
+#include <sys/alt_timestamp.h>
+#include "sys/alt_alarm.h"
+#include <fcntl.h>
+#include <unistd.h>
+
+#ifndef UART_NAME
+  // Per system.h this instance is named "/dev/uart"
+  #define UART_NAME "/dev/uart"
+#endif
+
+#define HEARTBEAT_MS 1000
+
+// ======== Globals ========
+static TickData g_pm;        // SCCharts pacemaker state
+static int      g_uart_fd = -1;
+static alt_u32  g_last_tick = 0;    // timestamp ticks
+static alt_u32  g_last_hb_ms = 0;   // last heartbeat time (ms)
+
+// ======== Helpers ========
+static inline alt_u32 ms_now(void){
+  alt_u64 t = alt_timestamp();
+  alt_u32 f = alt_timestamp_freq();
+  return (alt_u32)((t * 1000ULL) / (f ? f : 1));
+}
+
+static void leds_show_mode(alt_u32 sw){
+  // Mirror SW[1:0] onto red LEDs 1:0
+  IOWR_ALTERA_AVALON_PIO_DATA(LEDS_RED_BASE, (sw & 0x03));
+}
+
+static void leds_show_pace(int AP, int VP){
+  alt_u32 g = 0;
+  if (AP) g |= 0x02; // LEDG1
+  if (VP) g |= 0x01; // LEDG0
+  IOWR_ALTERA_AVALON_PIO_DATA(LEDS_GREEN_BASE, g);
+}
+
+static void handle_buttons_inputs(void){
+  // Keys are active-low
+  alt_u32 keys = IORD_ALTERA_AVALON_PIO_DATA(KEYS_BASE);
+  g_pm.AS = !(keys & 0x02); // KEY1 -> AS
+  g_pm.VS = !(keys & 0x01); // KEY0 -> VS
+}
+
+static void handle_uart_inputs(void){
+  // Non-blocking read of available bytes; map to senses
+  char ch;
+  int n;
+  while ((n = read(g_uart_fd, &ch, 1)) > 0) {
+    if (ch == 'A' || ch == 'a') g_pm.AS = 1;
+    if (ch == 'V' || ch == 'v') g_pm.VS = 1;
+  }
+}
+
+static void uart_send_probe(void){
+  if (g_uart_fd >= 0) {
+    const char *probe = "HELLO_FROM_BOARD\r\n";
+    (void)write(g_uart_fd, probe, (int)strlen(probe));
+  }
+}
+
+static void uart_send_pace_bytes_if_enabled(int uart_enabled, int AP, int VP){
+  if (!uart_enabled || g_uart_fd < 0) return;
+  if (AP) { const char A = 'A'; (void)write(g_uart_fd, &A, 1); }
+  if (VP) { const char V = 'V'; (void)write(g_uart_fd, &V, 1); }
+}
+
+static void heartbeat_stdout(void){
+  alt_u32 now = ms_now();
+  if (now - g_last_hb_ms >= HEARTBEAT_MS){
+    g_last_hb_ms = now;
+    printf("[HB] t=%ums\n", now);
+    fflush(stdout);
+  }
+}
+
+// ======== main ========
+int main(void){
+  // Initialize SCCharts state
+  reset(&g_pm);
+
+  // Timestamp (ms) basis
+  if (alt_timestamp_start() < 0) {
+    printf("[ERR] alt_timestamp_start failed\n");
+  }
+  g_last_tick = alt_timestamp();
+  g_last_hb_ms = 0;
+
+  // Debug banner to JTAG console
+  printf("\n==== COMPSYS303 Pacemaker (SCCharts) ====.\n");
+  printf("UART dev: %s (115200 8N1)\n", UART_NAME);
+  printf("Timings: AVI=%d AEI=%d PVARP=%d VRP=%d LRI=%d URI=%d (ms)\n",
+         AVI_VALUE, AEI_VALUE, PVARP_VALUE, VRP_VALUE, LRI_VALUE, URI_VALUE);
+  printf("SW0=SCCharts/C  (0=SCCharts,1=C)\nSW1=AS/VS source (0=Buttons,1=UART)\n\n");
+  fflush(stdout);
+
+  // Open hardware UART in non-blocking mode
+  g_uart_fd = open(UART_NAME, O_RDWR | O_NONBLOCK);
+  if (g_uart_fd < 0) {
+    printf("[ERR] open(%s) failed — check SOPC name, routing and cable.\n", UART_NAME);
+  } else {
+    printf("[OK ] %s opened.\n", UART_NAME);
+    uart_send_probe();
+  }
+  fflush(stdout);
+
+  // ===== Main loop =====
+  while (1) {
+    // Read switches and display on red LEDs
+    alt_u32 sw = IORD_ALTERA_AVALON_PIO_DATA(SWITCHES_BASE);
+    leds_show_mode(sw);
+
+    // Mode decode (assignment polarity)
+    int sccharts_mode = ((sw & 0x01) == 0); // SW0=0 -> SCCharts
+    int uart_source   = ((sw & 0x02) != 0); // SW1=1 -> UART, else Buttons
+
+    // Compute deltaT in milliseconds for SCCharts
+    alt_u32 now_ticks = alt_timestamp();
+    alt_u32 elapsed   = now_ticks - g_last_tick;
+    g_last_tick       = now_ticks;
+    g_pm.deltaT = (double)elapsed * 1000.0 / (double)alt_timestamp_freq();
+
+    if (sccharts_mode) {
+      // Input path selection
+      if (uart_source) handle_uart_inputs(); else handle_buttons_inputs();
+
+      // Run one SCCharts tick
+      tick(&g_pm);
+
+      // Visualize paced outputs on green LEDs
+      leds_show_pace(g_pm.AP, g_pm.VP);
+
+      // Only send AP/VP bytes when UART mode is enabled (SW1=1)
+      uart_send_pace_bytes_if_enabled(uart_source, g_pm.AP, g_pm.VP);
+
+      // Senses are one-tick pulses
+      g_pm.AS = 0;
+      g_pm.VS = 0;
+    } else {
+      // C implementation reserved for later; keep outputs idle, show heartbeat
+      leds_show_pace(0, 0);
+    }
+
+    heartbeat_stdout();
+  }
+
+  return 0;
+}

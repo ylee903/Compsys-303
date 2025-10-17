@@ -1,0 +1,215 @@
+/*
+ * main.c — UART-debuggable pacemaker shim for COMPSYS 303
+ *
+ * Modes (from switches):
+ *   SW0: 0 = SCCharts, 1 = C/host timers (reserved here)
+ *   SW1: 0 = Buttons,  1 = UART
+ *
+ * Board I/O:
+ *   KEY0 -> VS  (ventricular sense)
+ *   KEY1 -> AS  (atrial sense)
+ *   LEDG0 <- VP (ventricular pace)
+ *   LEDG1 <- AP (atrial pace)
+ *   LEDR0..1 show mode (mirror SW)
+ *
+ * UART DEBUG PLAN
+ *  - Print a banner to STDOUT (JTAG UART) at boot so Nios II Console shows life
+ *  - Print which UART device was opened and the result
+ *  - Periodically print a heartbeat line to STDOUT every ~1 s
+ *  - Mirror every received UART byte to STDOUT as hex/ASCII
+ *  - Echo received 'A'/'V' back to the PC instantly (upper-case), plus paced AP/VP
+ *  - Send a startup probe string on the hardware UART: "HELLO_FROM_BOARD"\r\n
+ *
+ * Make sure in your BSP:
+ *  - STDOUT/STDERR are set to *jtag_uart* (for Nios II Console)
+ *  - UART_NAME below points to your *hardware* UART core (FTDI/USB-to-UART)
+ */
+
+#include <stdio.h>
+#include <string.h>
+#include <system.h>
+#include "Pacemaker.h"
+#include "timing.h"
+#include <altera_avalon_pio_regs.h>
+#include <alt_types.h>
+#include <sys/alt_irq.h>
+#include <sys/alt_timestamp.h>
+#include "sys/alt_alarm.h"
+#include <fcntl.h>
+#include <unistd.h>
+
+// ======== CONFIG ========
+#ifndef UART_NAME
+  // Fallback if not provided by BSP headers; change to your SOPC name
+  #define UART_NAME "/dev/uart_0"
+#endif
+
+#define HEARTBEAT_MS 1000
+
+// ======== Globals ========
+static TickData g_pm;
+static int g_uart_fd = -1;
+static alt_u32 g_last_tick = 0;
+static alt_u32 g_last_beat_ms = 0;
+
+// Milliseconds since alt_timestamp_start()
+static inline alt_u32 ms_now(void){
+  alt_u64 ticks = alt_timestamp();
+  alt_u32 freq  = alt_timestamp_freq();
+  // convert with minimal FP — scale using 1000*ticks/freq
+  return (alt_u32)((ticks * 1000ULL) / (freq ? freq : 1));
+}
+
+static void std_banner(void){
+  printf("\n==== Pacemaker UART Debug Build ====\n");
+  printf("STDOUT: JTAG UART OK — if you see this, Nios II Console is connected.\n");
+  printf("Using UART device: %s\n", UART_NAME);
+  printf("Timings  AVI=%d AEI=%d PVARP=%d VRP=%d LRI=%d URI=%d (ms)\n",
+         AVI_VALUE, AEI_VALUE, PVARP_VALUE, VRP_VALUE, LRI_VALUE, URI_VALUE);
+  printf("SW0=SCCharts/C, SW1=Buttons/UART. Press keys or send 'A'/'V'.\n\n");
+  fflush(stdout);
+}
+
+static void uart_send_probe(void){
+  if (g_uart_fd >= 0) {
+    const char *probe = "HELLO_FROM_BOARD\r\n";
+    write(g_uart_fd, probe, (int)strlen(probe));
+  }
+}
+
+static void uart_print_open_status(void){
+  if (g_uart_fd < 0) {
+    printf("[ERR] open(%s) failed. Check SOPC name, pins, cable, and BSP.\n", UART_NAME);
+  } else {
+    printf("[OK ] %s opened (fd=%d).\n", UART_NAME, g_uart_fd);
+  }
+  fflush(stdout);
+}
+
+static void leds_show_mode(alt_u32 sw){
+  // Mirror SW[1:0] onto RED LEDs[1:0]
+  IOWR_ALTERA_AVALON_PIO_DATA(LEDS_RED_BASE, (sw & 0x03));
+}
+
+static void leds_show_pace(int AP, int VP){
+  alt_u32 g = 0;
+  if (AP) g |= 0x02; // LEDG1
+  if (VP) g |= 0x01; // LEDG0
+  IOWR_ALTERA_AVALON_PIO_DATA(LEDS_GREEN_BASE, g);
+}
+
+static void handle_buttons_mode(void){
+  alt_u32 keys = IORD_ALTERA_AVALON_PIO_DATA(KEYS_BASE);
+  g_pm.AS = !(keys & 0x02);
+  g_pm.VS = !(keys & 0x01);
+}
+
+static void handle_uart_mode(void){
+  // Drain all available bytes; non-blocking
+  char ch;
+  int n;
+  while ((n = read(g_uart_fd, &ch, 1)) > 0){
+    // Debug log to STDOUT
+    if (ch >= 32 && ch <= 126) {
+      printf("[RX] '%c' (0x%02X)\n", ch, (unsigned char)ch);
+    } else {
+      printf("[RX] 0x%02X\n", (unsigned char)ch);
+    }
+
+    // Map to senses (upper or lower allowed)
+    if (ch == 'A' || ch == 'a') g_pm.AS = 1;
+    if (ch == 'V' || ch == 'v') g_pm.VS = 1;
+
+    // Echo for wiring sanity
+    if (g_uart_fd >= 0) write(g_uart_fd, &ch, 1);
+  }
+}
+
+static void heartbeat_stdout(void){
+  alt_u32 now_ms = ms_now();
+  if (now_ms - g_last_beat_ms >= HEARTBEAT_MS){
+    g_last_beat_ms = now_ms;
+    printf("[HB] t=%ums SCCharts running.\n", now_ms);
+    fflush(stdout);
+  }
+}
+
+int main(void){
+  // Init state
+
+
+	// TEMP: prove hardware UART TX path
+	static const char Z = 'Z';
+	while (1) {
+	    if (g_uart_fd >= 0) write(g_uart_fd, &Z, 1);
+	    for (volatile int i=0; i<500000; ++i) {} // ~200ms crude delay @ Nios II
+	}
+
+
+
+
+  reset(&g_pm);
+
+  if (alt_timestamp_start() < 0){
+    printf("[ERR] alt_timestamp_start failed!\n");
+  }
+  g_last_tick    = alt_timestamp();
+  g_last_beat_ms = 0;
+
+  std_banner();
+
+  // Open hardware UART non-blocking
+  g_uart_fd = open(UART_NAME, O_RDWR | O_NONBLOCK);
+  uart_print_open_status();
+  uart_send_probe();
+
+  while (1){
+    // Mode switches
+    alt_u32 sw = IORD_ALTERA_AVALON_PIO_DATA(SWITCHES_BASE);
+    leds_show_mode(sw);
+    int sccharts_mode = !(sw & 0x01); // SW0 low => SCCharts
+    int uart_mode     = !(sw & 0x02); // SW1 low => Buttons, high => UART
+
+    // DeltaT (ms) for SCCharts
+    alt_u32 now_ticks = alt_timestamp();
+    alt_u32 elapsed   = now_ticks - g_last_tick;
+    g_last_tick       = now_ticks;
+    g_pm.deltaT = (double)elapsed * 1000.0 / (double)alt_timestamp_freq();
+
+    if (sccharts_mode){
+      if (uart_mode){
+        handle_uart_mode();
+      } else {
+        handle_buttons_mode();
+      }
+
+      // Run SCCharts tick
+      tick(&g_pm);
+
+      // Output: LEDs and UART (send AP/VP pulses)
+      leds_show_pace(g_pm.AP, g_pm.VP);
+
+      if (g_pm.AP && g_uart_fd >= 0){
+        const char A = 'A';
+        write(g_uart_fd, &A, 1);
+        printf("[TX] AP -> 'A'\n");
+      }
+      if (g_pm.VP && g_uart_fd >= 0){
+        const char V = 'V';
+        write(g_uart_fd, &V, 1);
+        printf("[TX] VP -> 'V'\n");
+      }
+
+      // Clear one-tick senses
+      g_pm.AS = 0;
+      g_pm.VS = 0;
+    } else {
+      // Reserved for C-only implementation — still show heartbeat
+      leds_show_pace(0,0);
+    }
+
+    heartbeat_stdout();
+  }
+
+  return 0;
+}

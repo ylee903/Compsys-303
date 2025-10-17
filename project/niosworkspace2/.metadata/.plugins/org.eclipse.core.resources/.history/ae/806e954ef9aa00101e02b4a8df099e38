@@ -1,0 +1,61 @@
+TickData pacemaker_data;
+int uart_fd;
+
+
+// add near top if missing
+#include "sys/alt_alarm.h"
+
+static volatile int tick_flag = 0;
+static alt_alarm alarm;
+
+// 1-ms callback
+static alt_u32 one_ms(void* ctx) {
+    tick_flag = 1;
+    return 1;        // call again in 1 ms
+}
+
+int main(void) {
+    reset(&pacemaker_data);
+
+    // open the *hardware* uart (115200 8-N-1)
+    uart_fd = open(UART_NAME, O_RDWR | O_NONBLOCK);
+    if (uart_fd < 0)
+        printf("Error opening %s\n", UART_NAME);
+    else
+        printf("Opened %s\n", UART_NAME);
+
+    // start 1 ms alarm (uses TIMER_0 defined in system.h)
+    if (alt_alarm_start(&alarm, 1, one_ms, NULL) < 0)
+        printf("alt_alarm_start failed\n");
+
+    for (;;) {
+        if (!tick_flag) continue;   // wait for 1 ms
+        tick_flag = 0;
+
+        // --- read keys (active-low) ---
+        alt_u32 k = IORD_ALTERA_AVALON_PIO_DATA(KEYS_BASE);
+        pacemaker_data.AS = ((k & 0x2) == 0);
+        pacemaker_data.VS = ((k & 0x1) == 0);
+
+        // fixed step size = 1 ms
+        pacemaker_data.deltaT = 1.0;
+        tick(&pacemaker_data);
+
+        // --- UART mode (virtual heart) ---
+        char ch;
+        int n = read(uart_fd, &ch, 1);    // non-blocking
+        if (n > 0) {
+            if (ch == 'A') pacemaker_data.AS = 1;
+            if (ch == 'V') pacemaker_data.VS = 1;
+        }
+
+        if (pacemaker_data.AP) write(uart_fd, "A", 1);
+        if (pacemaker_data.VP) write(uart_fd, "V", 1);
+
+        // show pacing on LEDs (optional)
+        alt_u32 leds = 0;
+        if (pacemaker_data.VP) leds |= 1u<<0;
+        if (pacemaker_data.AP) leds |= 1u<<1;
+        IOWR_ALTERA_AVALON_PIO_DATA(LEDS_GREEN_BASE, leds);
+    }
+}

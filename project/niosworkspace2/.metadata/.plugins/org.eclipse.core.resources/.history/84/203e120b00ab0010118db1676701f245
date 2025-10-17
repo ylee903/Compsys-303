@@ -1,0 +1,145 @@
+/*
+ * main.c
+ *  Created on: 15/10/2025
+ *  Author: ylee903
+ */
+#include <stdio.h>
+#include <system.h> // to use the symbolic names
+#include "Pacemaker.h"
+#include "timing.h"
+#include <altera_avalon_pio_regs.h> // to use PIO functions
+#include <alt_types.h> // alt_u32 is a kind of alt_types
+#include <sys/alt_irq.h> // to register interrupts
+#include <sys/alt_timestamp.h> // for timer stuff
+#include "sys/alt_alarm.h" // for C timer
+#include <fcntl.h>
+#include <unistd.h>
+
+/* Board I/O
+ * KEY0: VS
+ * KEY1: AS
+ *
+ * SW0: SCCharts/C
+ * SW1: Buttons/UART
+ *
+ * LEDG0: VP signal
+ * LEDG1: AP signal
+ *
+ * LEDRO: OFF = SCCharts, ON = C
+ * LEDR1: OFF = Buttons, ON = UART
+ */
+
+// scchart struct
+TickData pacemaker_data;
+int uart_fd;
+
+int main(void)
+{
+	// init TickData struct with default values
+	reset(&pacemaker_data);
+
+	// open uart device with readwrite and nonblocking
+	uart_fd = open(UART_NAME, O_RDWR | O_NONBLOCK);
+	if (uart_fd < 0) {
+	    printf("Error: Failed to open UART device %s\n", UART_NAME);
+//	    while(1); potentially halt?
+	} else {
+	    printf("Successfully opened UART device %s\n", UART_NAME);
+	}
+
+	// init delta timer
+	alt_u32 last_time = 0;
+	if (alt_timestamp_start() < 0) {
+	    printf("Error: Could not start timestamp timer.\n");
+	}
+	last_time = alt_timestamp();
+
+	while(1)
+	{
+		alt_u32 switches = IORD_ALTERA_AVALON_PIO_DATA(SWITCHES_BASE);
+//		alt_u32 leds = IORD_ALTERA_AVALON_PIO_DATA(LEDS_RED_BASE);
+		// update LEDs based on switch modes
+		IOWR_ALTERA_AVALON_PIO_DATA(LEDS_RED_BASE, (switches & 0x03));
+
+		int sccharts_mode = !(switches & 0x01); // SW0: 0 = SCCharts, 1 = C timers
+		int button_mode = !(switches & 0x02);   // SW1: 0 = Buttons, 1 = UART
+
+		if (sccharts_mode) {
+			if(button_mode) {
+				// sccharts with buttons
+				alt_u32 keys = IORD_ALTERA_AVALON_PIO_DATA(KEYS_BASE);
+
+				// map buttons to AS/VS
+				pacemaker_data.AS = !(keys & 0x02);
+				pacemaker_data.VS = !(keys & 0x01);
+
+				// update deltaT
+				alt_u32 current_time = alt_timestamp();
+				alt_u32 elapsed_ticks = current_time - last_time;
+				last_time = current_time;
+				// convert from ticks to milliseconds
+				pacemaker_data.deltaT = (double)(elapsed_ticks) * 1000.0 / (double)alt_timestamp_freq();
+
+				// execute scchart tick
+				// everything between two ticks is happening "instantly"
+				tick(&pacemaker_data);
+
+				// reflect pacemaker pulses on LEDs
+				alt_u32 green_leds = 0;
+				if (pacemaker_data.AP) {
+					green_leds |= 0x02; // LEDG1
+				}
+				if (pacemaker_data.VP) {
+					green_leds |= 0x01; // LEDG0
+				}
+
+				// turn on the LEDs
+				IOWR_ALTERA_AVALON_PIO_DATA(LEDS_GREEN_BASE, green_leds);
+
+				// reset inputs for next tick
+				pacemaker_data.AS = 0;
+				pacemaker_data.VS = 0;
+			}
+			else {
+				// sccharts with UART
+				char received_char;
+				int bytes_read = read(uart_fd, &received_char, 1);
+
+				if (bytes_read > 0) {
+					if (received_char == 'A') {
+						pacemaker_data.AS = 1;
+					}
+					else if (received_char == 'V') {
+						pacemaker_data.VS = 1;
+					}
+
+				}
+
+				// execute tick
+				tick(&pacemaker_data);
+
+				// send pacing over uart
+				if (pacemaker_data.AP) {
+					write(uart_fd, "A", 1);
+				}
+				if (pacemaker_data.VP) {
+					write(uart_fd, "V", 1);
+				}
+
+				pacemaker_data.AS = 0;
+				pacemaker_data.VS = 0;
+
+			}
+		}
+		else {
+			if(button_mode) {
+}
+			else {
+			}
+		}
+
+	}
+
+}
+
+
