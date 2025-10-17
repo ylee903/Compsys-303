@@ -1,0 +1,290 @@
+/* Pacemaker_C_rectified.c — C rewrite of your SCCharts Pacemaker with explicit atrial inhibition
+   Usage:
+     - Include this file in your project and compile.
+     - Call PM_init(&pm); once.
+     - Call PM_step(&pm, AS, VS); every 1 ms. Read pm.AP / pm.VP as one‑tick pulses.
+
+   Key change vs previous version:
+     * HARD atrial inhibition: if an intrinsic atrial event (A_EVT) is sensed
+       in ANY tick, we clear AP in that same tick (even if AEI expired).
+*/
+#ifndef PACEMAKER_C_SINGLE_H
+#define PACEMAKER_C_SINGLE_H
+
+#include <stdint.h>
+
+/* If timing.h is available, it’ll override these. */
+#ifndef AVI_VALUE
+#define AVI_VALUE   300
+#endif
+#ifndef AEI_VALUE
+#define AEI_VALUE   800
+#endif
+#ifndef PVARP_VALUE
+#define PVARP_VALUE 50
+#endif
+#ifndef VRP_VALUE
+#define VRP_VALUE   150
+#endif
+#ifndef LRI_VALUE
+#define LRI_VALUE   950
+#endif
+#ifndef URI_VALUE
+#define URI_VALUE   900
+#endif
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+/* Public state (inputs/outputs mimic your SCCharts interface). */
+typedef struct {
+  /* caller-provided inputs for this 1 ms tick */
+  int AS;   /* atrial sense (0/1) */
+  int VS;   /* ventricular sense (0/1) */
+
+  /* one-tick outputs produced by the algorithm */
+  int AP;   /* atrial pace pulse (0/1) */
+  int VP;   /* ventricular pace pulse (0/1) */
+
+  /* ---------------- internal state (don’t touch) ---------------- */
+  /* last-tick outputs (for pre(AP)/pre(VP)) */
+  int last_AP, last_VP;
+
+  /* derived event pulses this tick */
+  int A_EVT, V_EVT;     /* atrial/ventricular events (1-tick pulses) */
+  int A_REFR, V_REFR;   /* atrial/ventricular refractory markers (debug/LEDs) */
+
+  /* URI gate flag */
+  int uri_active;
+
+  /* Region states */
+  enum { VRF_IDLE, VRF_BLOCK } vref_state;
+  enum { ARF_CLEAR, ARF_HOLD } aref_state;
+
+  enum { AEI_IDLE, AEI_WAIT } aei_state;
+  enum { AVI_IDLE, AVI_WATCH, AVI_URI_HOLD } avi_state;
+  enum { LRI_WAIT, LRI_HOLD } lri_state;
+  enum { URI_IDLE, URI_BUSY } uri_state;
+
+  /* Region “clocks” (elapsed ms while in their active states) */
+  int t_vref;
+  int t_aref;
+  int t_aei;
+  int t_avi;
+  int t_lri;
+  int t_uri;
+
+  /* Timing parameters (copied from #defines for clarity/testability) */
+  int T_AVI, T_AEI, T_PVAR, T_VRP, T_LRI, T_URI;
+} PacemakerC;
+
+/* Init with timing constants and reset all state. */
+static inline void PM_init(PacemakerC* s) {
+  s->AS = s->VS = 0;
+  s->AP = s->VP = 0;
+  s->last_AP = s->last_VP = 0;
+
+  s->A_EVT = s->V_EVT = 0;
+  s->A_REFR = s->V_REFR = 0;
+  s->uri_active = 0;
+
+  s->vref_state = VRF_IDLE; s->t_vref = 0;
+  s->aref_state = ARF_CLEAR; s->t_aref = 0;
+
+  s->aei_state = AEI_IDLE; s->t_aei = 0;
+  s->avi_state = AVI_IDLE; s->t_avi = 0;
+  s->lri_state = LRI_WAIT; s->t_lri = 0;
+  s->uri_state = URI_IDLE; s->t_uri = 0;
+
+  s->T_AVI  = AVI_VALUE;
+  s->T_AEI  = AEI_VALUE;
+  s->T_PVAR = PVARP_VALUE;
+  s->T_VRP  = VRP_VALUE;
+  s->T_LRI  = LRI_VALUE;
+  s->T_URI  = URI_VALUE;
+}
+
+/* Step one millisecond. Set s->AS/s->VS before calling.
+   Produces one-tick pulses s->AP/s->VP. */
+static inline void PM_step(PacemakerC* s, int AS, int VS) {
+  /* latch inputs */
+  s->AS = AS ? 1 : 0;
+  s->VS = VS ? 1 : 0;
+
+  /* clear one-tick outputs and pulses */
+  s->AP = s->VP = 0;
+  s->A_EVT = s->V_EVT = 0;
+  s->A_REFR = s->V_REFR = 0;
+
+  /* ------------------------------------------------------------------ */
+  /* Region: VRefrac  (produces V_EVT on VS or pre(VP); VRP gating)     */
+  /* ------------------------------------------------------------------ */
+  switch (s->vref_state) {
+    case VRF_IDLE:
+      if (s->VS || s->last_VP) {
+        s->V_EVT = 1;        /* pulse at entry */
+        s->t_vref = 0;
+        s->vref_state = VRF_BLOCK;
+      }
+      break;
+    case VRF_BLOCK:
+      if (s->VS) s->V_REFR = 1; /* VS during VRP → refractory marker */
+      s->t_vref++;
+      if (s->t_vref >= s->T_VRP) {
+        s->vref_state = VRF_IDLE;
+      }
+      break;
+  }
+
+  /* ------------------------------------------------------------------ */
+  /* Region: ARefrac  (produces A_EVT on AS or pre(AP); PVARP gating)   */
+  /* VS or pre(VP) -> hold(PVARP)                                       */
+  /* ------------------------------------------------------------------ */
+  switch (s->aref_state) {
+    case ARF_CLEAR:
+      if (s->VS || s->last_VP) {           /* start PVARP hold window */
+        s->t_aref = 0;
+        s->aref_state = ARF_HOLD;
+      } else if (s->AS || s->last_AP) {    /* emit A event (NOT in PVARP) */
+        s->A_EVT = 1; /* intrinsic A (or pre(AP)) */
+      }
+      break;
+    case ARF_HOLD:
+      if (s->AS) s->A_REFR = 1;            /* AS during PVARP -> refractory marker */
+      s->t_aref++;
+      if (s->t_aref >= s->T_PVAR) {
+        s->aref_state = ARF_CLEAR;
+      }
+      break;
+  }
+
+  /* ------------------------------------------------------------------ */
+  /* Region: AEI (V → A pacing if atrium quiet)                         */
+  /* On V_EVT -> start wait; if A_EVT -> cancel; else AP at T_AEI.      */
+  /* ------------------------------------------------------------------ */
+  switch (s->aei_state) {
+    case AEI_IDLE:
+      if (s->V_EVT) {
+        s->t_aei = 0;
+        s->aei_state = AEI_WAIT;
+      }
+      break;
+    case AEI_WAIT:
+      if (s->A_EVT) {
+        s->aei_state = AEI_IDLE;           /* intrinsic A inhibits AP */
+      } else {
+        s->t_aei++;
+        if (s->t_aei >= s->T_AEI) {
+          s->AP = 1;                        /* pace only if no A_EVT happened */
+          s->aei_state = AEI_IDLE;
+        }
+      }
+      break;
+  }
+
+  /* ------------------------------------------------------------------ */
+  /* Region: AVI (A → V pacing, but gated by URI)                        */
+  /* A_EVT starts watch; if V_EVT -> cancel; after T_AVI enter uri_hold. */
+  /* In uri_hold: if V_EVT cancel; else when uri_active==0 -> VP.        */
+  /* ------------------------------------------------------------------ */
+  switch (s->avi_state) {
+    case AVI_IDLE:
+      if (s->A_EVT) {
+        s->t_avi = 0;
+        s->avi_state = AVI_WATCH;
+      }
+      break;
+    case AVI_WATCH:
+      if (s->V_EVT) {
+        s->avi_state = AVI_IDLE;
+      } else {
+        s->t_avi++;
+        if (s->t_avi >= s->T_AVI) {
+          s->avi_state = AVI_URI_HOLD;
+        }
+      }
+      break;
+    case AVI_URI_HOLD:
+      if (s->V_EVT) {
+        s->avi_state = AVI_IDLE;
+      } else if (!s->uri_active) {
+        s->VP = 1;
+        s->avi_state = AVI_IDLE;
+      }
+      break;
+  }
+
+  /* ------------------------------------------------------------------ */
+  /* Region: LRI (backup V rate, gated by URI like AVI)                  */
+  /* V_EVT resets wait timer. When T_LRI elapses -> hold until URI off,  */
+  /* then emit VP and reset to wait.                                     */
+  /* ------------------------------------------------------------------ */
+  switch (s->lri_state) {
+    case LRI_WAIT:
+      if (s->V_EVT) {
+        s->t_lri = 0; /* stay in WAIT, timer reset */
+      } else {
+        s->t_lri++;
+        if (s->t_lri >= s->T_LRI) {
+          s->lri_state = LRI_HOLD;
+        }
+      }
+      break;
+    case LRI_HOLD:
+      if (s->V_EVT) {
+        s->t_lri = 0;
+        s->lri_state = LRI_WAIT;
+      } else if (!s->uri_active) {
+        s->VP = 1;
+        s->t_lri = 0;
+        s->lri_state = LRI_WAIT;
+      }
+      break;
+  }
+
+  /* ------------------------------------------------------------------ */
+  /* Region: URI (upper-rate: blocks VP while active)                    */
+  /* Any V_EVT starts/refreshes busy window; after T_URI → inactive.     */
+  /* ------------------------------------------------------------------ */
+  switch (s->uri_state) {
+    case URI_IDLE:
+      if (s->V_EVT) {
+        s->uri_active = 1;
+        s->t_uri = 0;
+        s->uri_state = URI_BUSY;
+      }
+      break;
+    case URI_BUSY:
+      if (s->V_EVT) {
+        s->t_uri = 0; /* reassert/refresh busy */
+      } else {
+        s->t_uri++;
+        if (s->t_uri >= s->T_URI) {
+          s->uri_active = 0;
+          s->uri_state = URI_IDLE;
+        }
+      }
+      break;
+  }
+
+  /* ------------------------------------------------------------------ */
+  /* HARD atrial inhibition (same‑tick safety):                          */
+  /* If an intrinsic A event was detected this tick, NEVER pace the A.   */
+  /* This covers race conditions where AEI expires on the same ms an A   */
+  /* is sensed. Intrinsic beats always win.                               */
+  /* ------------------------------------------------------------------ */
+  if (s->A_EVT) {
+    s->AP = 0;
+  }
+
+  /* finalize: update pre() latches */
+  s->last_AP = s->AP;
+  s->last_VP = s->VP;
+}
+
+#ifdef __cplusplus
+}
+#endif
+
+#endif /* PACEMAKER_C_SINGLE_H */

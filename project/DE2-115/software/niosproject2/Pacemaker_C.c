@@ -2,10 +2,24 @@
 #include <stdio.h>
 #include <sys/alt_alarm.h>
 #include <altera_avalon_pio_regs.h>
-#include "Pacemaker_C.h"
 #include <system.h>
+#include "Pacemaker_C.h"
 
-/* Module-local 1ms ticker */
+/* ------------------------------------------------------------------
+   CHANGE SUMMARY (what you asked for)
+   - The ONLY place that creates an artificial atrial event (AP) is the
+     AEI-timeout block. We now add an extra guard so AP will NOT fire
+     if we are still within the atrial post‑ventricular refractory
+     period (PVARP).
+   - URI is a ventricular upper‑rate limiter; it should NOT block atrial
+     pacing. We leave URI gating for VP only.
+   - New condition added:
+       if (AEI==0 && seen_AS_since_last_V==0 && PVARP==0) -> AP
+     This ensures we never stimulate the atrium immediately after a
+     natural A event (or AP), because PVARP is started on A events.
+   ------------------------------------------------------------------ */
+
+/* ---------------- Module-local 1ms ticker ---------------- */
 static volatile alt_u32 s_ms_ticks = 0;
 static alt_alarm s_alarm;
 static int s_banner_printed = 0;
@@ -26,34 +40,39 @@ int PMc_start_1ms_alarm(void) {
   return r;
 }
 
-static void dec_if_pos(int* t) { if (*t > 0) (*t)--; }
+/* ---------------- Helpers ---------------- */
+static inline void dec_if_pos(int* t) { if (*t > 0) (*t)--; }
 
+/* ---------------- Lifecycle ---------------- */
 void PMc_init(PacemakerC* s) {
   memset(s, 0, sizeof(*s));
-  s->led_pulse_ms = 25;   /* default visibility */
+  s->led_pulse_ms = 25;    /* LED stretch visibility */
   /* Start with LRI running so backup VP will eventually occur */
   s->LRI = LRI_VALUE;
 }
 
 void PMc_set_led_pulse_ms(PacemakerC* s, int ms) {
-  s->led_pulse_ms = (ms > 0 ? ms : 1);
+  (void)s;
+  if (ms < 1) ms = 1;
+  s->led_pulse_ms = ms;
 }
 
+/* Caller provides raw one-tick pulses. We also keep your KEY2 sanity print. */
 void PMc_set_senses(PacemakerC* s, int AS_raw, int VS_raw) {
-  s->AS_raw = AS_raw;
-  s->VS_raw = VS_raw;
+  s->AS_raw = AS_raw ? 1 : 0;
+  s->VS_raw = VS_raw ? 1 : 0;
 
-  /* Sanity button: KEY2 (active-low) prints a confirmation that C-mode is alive */
-  {
-    alt_u32 keys = IORD_ALTERA_AVALON_PIO_DATA(KEYS_BASE);
-    if ((keys & 0x04) == 0) {
-      printf("[C-MODE] Sanity button (KEY2) pressed — C version confirmed running.\n");
-      fflush(stdout);
-    }
+#ifdef KEYS_BASE
+  /* KEY2 (bit2, active-low) to confirm C-mode alive */
+  alt_u32 keys = IORD_ALTERA_AVALON_PIO_DATA(KEYS_BASE);
+  if ((keys & 0x04) == 0) {
+    printf("[C-MODE] Sanity button (KEY2) pressed — C version confirmed running.\n");
+    fflush(stdout);
   }
+#endif
 }
 
-/* One 1-ms algorithm step */
+/* ---------------- Core 1 ms algorithm ---------------- */
 static void PMc_tick_1ms(PacemakerC* s) {
   /* Decrement timers and LED stretch */
   dec_if_pos(&s->AVI); dec_if_pos(&s->AEI); dec_if_pos(&s->PVARP);
@@ -69,32 +88,35 @@ static void PMc_tick_1ms(PacemakerC* s) {
 
   /* ---------------- Intrinsic events first ---------------- */
   if (s->VS) {
-    /* A real V happened → reset V-related timers and cancel any pending VP */
+    /* Real V happened → reset V-related timers and cancel any pending VP */
     s->VRP = VRP_VALUE;
     s->AEI = AEI_VALUE;
     s->LRI = LRI_VALUE;
     s->URI = URI_VALUE;
     s->seen_AS_since_last_V = 0;
 
-    s->AVI = 0;                    /* inhibit any AVI-based pending */
-    s->pending_vp_avi = 0;         /* cancel AVI-pending */
-    s->pending_vp_lri = 0;         /* cancel LRI-pending */
-    s->vp_waiting_for_URI = 0;     /* derived flag (kept for debug) */
+    s->AVI = 0;
+    s->pending_vp_avi = 0;
+    s->pending_vp_lri = 0;
+    s->vp_waiting_for_URI = 0;
   }
 
   if (s->AS) {
-    s->PVARP = PVARP_VALUE;
-    s->AVI   = AVI_VALUE;          /* start A->V interval */
-    s->seen_AS_since_last_V = 1;
+    s->PVARP = PVARP_VALUE;      /* start/refresh atrial refractory */
+    s->AVI   = AVI_VALUE;        /* start A→V interval */
+    s->seen_AS_since_last_V = 1; /* remember intrinsic atrial activity */
   }
 
-  /* --------------- Atrial pacing on AEI timeout --------------- */
-  if (s->AEI == 0 && s->seen_AS_since_last_V == 0) {
+  /* --------------- Atrial pacing on AEI timeout ---------------
+     ORIGINAL: if (AEI==0 && seen_AS_since_last_V==0) -> AP
+     CHANGE:   also require PVARP==0 so we never pace A too soon after
+               a natural A (or AP) event. URI is NOT checked here by design. */
+  if (s->AEI == 0 && s->seen_AS_since_last_V == 0 && s->PVARP == 0) {
     s->AP = 1; s->AP_fired = 1; s->AP_led_ms = s->led_pulse_ms;
     /* AP behaves like an atrial event */
-    s->PVARP = PVARP_VALUE;
-    s->AVI   = AVI_VALUE;
-    s->seen_AS_since_last_V = 1;
+    s->PVARP = PVARP_VALUE;      /* begin atrial refractory after AP */
+    s->AVI   = AVI_VALUE;        /* enable A→V tracking */
+    s->seen_AS_since_last_V = 1; /* treat AP as an A-event */
   }
 
   /* ---------------- Ventricular pacing desire ---------------- */
@@ -102,35 +124,33 @@ static void PMc_tick_1ms(PacemakerC* s) {
     int want_vp_avi = 0;
     int want_vp_lri = 0;
 
-    /* AVI-based desire: only once per A-event (don't re-trigger every ms) */
+    /* AVI-based desire: only once per A-event */
     if (s->seen_AS_since_last_V && s->AVI == 0 && !s->pending_vp_avi) {
       want_vp_avi = 1;
     }
-
     /* LRI-based desire: only once per LRI expiration window */
     if (s->LRI == 0 && !s->pending_vp_lri) {
       want_vp_lri = 1;
     }
 
-    /* Aggregate desire */
     if (want_vp_avi || want_vp_lri) {
       if (s->URI == 0) {
-        /* URI allows pacing now */
+        /* URI allows ventricular pacing now */
         s->VP = 1; s->VP_fired = 1; s->VP_led_ms = s->led_pulse_ms;
 
         /* Start/restart V-related timers */
         s->VRP = VRP_VALUE; s->AEI = AEI_VALUE; s->LRI = LRI_VALUE; s->URI = URI_VALUE;
 
-        /* Close the A->V loop */
+        /* Close the A→V loop */
         s->AVI = 0;
         s->seen_AS_since_last_V = 0;
 
-        /* Clear all pendings and debug flag */
+        /* Clear pendings */
         s->pending_vp_avi = 0;
         s->pending_vp_lri = 0;
         s->vp_waiting_for_URI = 0;
       } else {
-        /* Hold-off due to URI: remember *which* reason(s) caused desire */
+        /* Blocked by URI: remember reasons */
         if (want_vp_avi) s->pending_vp_avi = 1;
         if (want_vp_lri) s->pending_vp_lri = 1;
         s->vp_waiting_for_URI = 1;
@@ -154,6 +174,7 @@ static void PMc_tick_1ms(PacemakerC* s) {
   s->AS_raw = 0; s->VS_raw = 0;
 }
 
+/* ---------------- Drive steps for elapsed ms ---------------- */
 void PMc_run_for_elapsed_ms(PacemakerC* s) {
   while (s_ms_ticks) {
     PMc_tick_1ms(s);
@@ -161,6 +182,7 @@ void PMc_run_for_elapsed_ms(PacemakerC* s) {
   }
 }
 
+/* ---------------- Output helpers ---------------- */
 void PMc_poll_and_clear_pulses(PacemakerC* s, int* AP_any, int* VP_any) {
   if (AP_any) *AP_any = s->AP_fired;
   if (VP_any) *VP_any = s->VP_fired;

@@ -1,0 +1,203 @@
+/* pacemaker_c_single.h — header+impl: minimal A→V conduction support
+   Build:
+     // In most files:
+     #include "pacemaker_c_single.h"
+     // In exactly ONE .c file:
+     #define PACEMAKER_C_IMPL
+     #include "pacemaker_c_single.h"
+*/
+#ifndef PACEMAKER_C_SINGLE_H
+#define PACEMAKER_C_SINGLE_H
+
+#include <stdint.h>
+#include <string.h>
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+/* Safe defaults if timing.h isn't present */
+#ifndef AVI_VALUE
+#define AVI_VALUE   300   /* ms: max V delay after A */
+#endif
+#ifndef AEI_VALUE
+#define AEI_VALUE   800
+#endif
+#ifndef PVARP_VALUE
+#define PVARP_VALUE 50
+#endif
+#ifndef VRP_VALUE
+#define VRP_VALUE   150
+#endif
+#ifndef LRI_VALUE
+#define LRI_VALUE   950
+#endif
+#ifndef URI_VALUE
+#define URI_VALUE   900
+#endif
+
+/* Public state (field names preserved so existing code compiles) */
+typedef struct {
+  /* Inputs (caller sets before stepping) */
+  int AS_raw;
+  int VS_raw;
+
+  /* Gated senses (unused beyond simple edge detect here) */
+  int AS;
+  int VS;
+
+  /* One-ms pace pulses */
+  int AP;
+  int VP;
+
+  /* Sticky flags (latched when a pace occurs; cleared by PMc_poll_and_clear_pulses) */
+  int AP_fired;
+  int VP_fired;
+
+  /* Timers (we only *use* AVI here; others are kept for ABI compatibility/inspection) */
+  int AVI, AEI, PVARP, VRP, LRI, URI;
+
+  /* Control/debug flags (kept for ABI; some reused) */
+  int seen_AS_since_last_V;
+  int vp_waiting_for_URI;
+  int pending_vp_avi;   /* reused: 1 while we owe a VP if AVI times out */
+  int pending_vp_lri;
+
+  /* LED stretch (basic one for VP) */
+  int led_pulse_ms;
+  int AP_led_ms;
+  int VP_led_ms;
+
+  /* --- Minimal internals for AV-assist --- */
+  int _avi_timer_ms;      /* counts down from AVI_VALUE after an AS edge */
+  int _prev_AS_raw;
+  int _prev_VS_raw;
+} PacemakerC;
+
+/* API (signatures unchanged) */
+void PMc_init(PacemakerC* s);
+void PMc_set_led_pulse_ms(PacemakerC* s, int ms);
+int  PMc_start_1ms_alarm(void);
+void PMc_run_for_elapsed_ms(PacemakerC* s);          /* advances by 1 ms per call */
+void PMc_set_senses(PacemakerC* s, int AS_raw, int VS_raw);
+void PMc_poll_and_clear_pulses(PacemakerC* s, int* AP_any, int* VP_any);
+int  PMc_led_AP_on(const PacemakerC* s);
+int  PMc_led_VP_on(const PacemakerC* s);
+
+#ifdef __cplusplus
+} /* extern "C" */
+#endif
+#endif /* PACEMAKER_C_SINGLE_H */
+
+/* ================= Implementation (compiled once where PACEMAKER_C_IMPL is defined) ================= */
+#ifdef PACEMAKER_C_IMPL
+
+static inline int _rising(int now, int prev) { return now && !prev; }
+static inline void _dec_if_pos(int* t) { if (*t > 0) --*t; }
+
+/* Initialize all fields and seed timer constants */
+void PMc_init(PacemakerC* s) {
+  if (!s) return;
+  memset(s, 0, sizeof(*s));
+
+  s->led_pulse_ms = 25;
+
+  /* Expose timing constants for anyone reading the struct */
+  s->AVI   = AVI_VALUE;
+  s->AEI   = AEI_VALUE;
+  s->PVARP = PVARP_VALUE;
+  s->VRP   = VRP_VALUE;
+  s->LRI   = LRI_VALUE;
+  s->URI   = URI_VALUE;
+
+  /* Internals */
+  s->_avi_timer_ms = 0;
+  s->_prev_AS_raw = 0;
+  s->_prev_VS_raw = 0;
+  s->pending_vp_avi = 0;
+}
+
+/* Optional cosmetic: LED stretch duration for visible pulses */
+void PMc_set_led_pulse_ms(PacemakerC* s, int ms) {
+  if (!s) return;
+  s->led_pulse_ms = (ms > 0) ? ms : 1;
+}
+
+/* No ISR/timer in this minimalist build */
+int PMc_start_1ms_alarm(void) { return 0; }
+
+/* One step = 1 ms.
+   Policy:
+     - On AS rising edge: start AVI window and mark that a VP is *owed* if no VS arrives in time.
+     - On VS rising edge: cancel that obligation (natural AV conduction occurred).
+     - When AVI expires and the obligation is still set: emit a 1-ms VP, then clear obligation.
+*/
+void PMc_run_for_elapsed_ms(PacemakerC* s) {
+  if (!s) return;
+
+  /* Clear one-tick outputs at the start of each ms */
+  s->AP = 0;
+  s->VP = 0;
+
+  /* LED decay */
+  _dec_if_pos(&s->AP_led_ms);
+  _dec_if_pos(&s->VP_led_ms);
+
+  /* Edge detect on raw senses supplied by caller */
+  const int as_edge = _rising(s->AS_raw, s->_prev_AS_raw);
+  const int vs_edge = _rising(s->VS_raw, s->_prev_VS_raw);
+  s->_prev_AS_raw = s->AS_raw;
+  s->_prev_VS_raw = s->VS_raw;
+
+  /* Expose simple gated senses (no refractory logic in this minimal build) */
+  s->AS = as_edge;
+  s->VS = vs_edge;
+
+  /* Handle AS: start AVI window; we "owe" a VP if no VS comes in time */
+  if (as_edge) {
+    s->_avi_timer_ms = s->AVI;   /* seed with AVI_VALUE */
+    s->pending_vp_avi = 1;
+    s->seen_AS_since_last_V = 1;
+  }
+
+  /* Handle VS: successful natural AV conduction → cancel pending VP */
+  if (vs_edge) {
+    s->_avi_timer_ms = 0;
+    s->pending_vp_avi = 0;
+    s->seen_AS_since_last_V = 0;
+  }
+
+  /* Countdown AVI window if active */
+  _dec_if_pos(&s->_avi_timer_ms);
+
+  /* If AVI just expired and we still owe a VP → pace ventricle once */
+  if (s->_avi_timer_ms == 0 && s->pending_vp_avi) {
+    s->VP = 1;                /* one-tick pace output */
+    s->VP_fired = 1;          /* latch for poll API */
+    s->VP_led_ms = s->led_pulse_ms;
+    s->pending_vp_avi = 0;    /* obligation fulfilled */
+    s->seen_AS_since_last_V = 0;
+  }
+}
+
+/* Set raw senses (usually from buttons/UART) */
+void PMc_set_senses(PacemakerC* s, int AS_raw, int VS_raw) {
+  if (!s) return;
+  s->AS_raw = AS_raw ? 1 : 0;
+  s->VS_raw = VS_raw ? 1 : 0;
+}
+
+/* Report-and-clear sticky pace latches */
+void PMc_poll_and_clear_pulses(PacemakerC* s, int* AP_any, int* VP_any) {
+  if (!s) return;
+  if (AP_any) *AP_any = s->AP_fired;
+  if (VP_any) *VP_any = s->VP_fired;
+  s->AP_fired = 0;
+  s->VP_fired = 0;
+}
+
+/* LED helpers */
+int PMc_led_AP_on(const PacemakerC* s) { return s && s->AP_led_ms > 0; }
+int PMc_led_VP_on(const PacemakerC* s) { return s && s->VP_led_ms > 0; }
+
+#endif /* PACEMAKER_C_IMPL */

@@ -1,0 +1,24 @@
+// main.c
+#define PACEMAKER_C_IMPL
+#include "pacemaker_c_single.h"
+#include <stdio.h>
+
+int main(void) {
+    PacemakerC pm;
+    PMc_init(&pm);
+
+    // Example 1 kHz loop stand-in (replace with your tick/ISR)
+    for (int t = 0; t < 2000; ++t) {
+        // pretend inputs
+        int AS = (t == 100);   // atrial sense at 100 ms
+        int VS = 0;            // no ventricular sense → will VP at ~AS+AVI
+
+        PMc_set_senses(&pm, AS, VS);
+        PMc_run_for_elapsed_ms(&pm);
+
+        if (pm.VP) {
+            printf("VP at t=%d ms\n", t);
+        }
+    }
+    return 0;
+}
