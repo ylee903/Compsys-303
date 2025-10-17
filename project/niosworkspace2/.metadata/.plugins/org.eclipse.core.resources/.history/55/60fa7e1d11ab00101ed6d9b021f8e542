@@ -1,0 +1,98 @@
+
+
+}
+
+
+void PMc_set_led_pulse_ms(PacemakerC* s, int ms){ s->led_pulse_ms = (ms > 0 ? ms : 1); }
+
+
+// One 1-ms algorithm step
+static void PMc_tick_1ms(PacemakerC* s){
+// Decrement timers and LED stretch
+dec_if_pos(&s->AVI); dec_if_pos(&s->AEI); dec_if_pos(&s->PVARP);
+dec_if_pos(&s->VRP); dec_if_pos(&s->LRI); dec_if_pos(&s->URI);
+dec_if_pos(&s->AP_led_ms); dec_if_pos(&s->VP_led_ms);
+
+
+// Gate senses by refractory
+s->AS = (s->AS_raw && s->PVARP == 0);
+s->VS = (s->VS_raw && s->VRP == 0);
+
+
+// Default outputs this ms
+s->AP = 0; s->VP = 0;
+
+
+// --- Intrinsic events first ---
+if (s->VS){
+s->VRP = VRP_VALUE;
+s->AEI = AEI_VALUE;
+s->LRI = LRI_VALUE;
+s->URI = URI_VALUE;
+s->seen_AS_since_last_V = 0;
+s->AVI = 0; // inhibit pending AVI-based VP
+s->vp_waiting_for_URI = 0; // cancel pending VP
+}
+if (s->AS){
+s->PVARP = PVARP_VALUE;
+s->AVI = AVI_VALUE; // start A→V interval
+s->seen_AS_since_last_V = 1;
+}
+
+
+// --- Atrial pacing on AEI timeout (if no AS since last V) ---
+if (s->AEI == 0 && s->seen_AS_since_last_V == 0){
+s->AP = 1; s->AP_fired = 1; s->AP_led_ms = s->led_pulse_ms;
+// AP behaves like an atrial event
+s->PVARP = PVARP_VALUE;
+s->AVI = AVI_VALUE;
+s->seen_AS_since_last_V = 1;
+}
+
+
+// --- Ventricular pacing desire ---
+int want_VP = 0;
+if (s->AVI == 0 && s->seen_AS_since_last_V){ want_VP = 1; }
+if (s->LRI == 0){ want_VP = 1; }
+
+
+if (want_VP){
+if (s->URI == 0){
+s->VP = 1; s->VP_fired = 1; s->VP_led_ms = s->led_pulse_ms;
+s->VRP = VRP_VALUE; s->AEI = AEI_VALUE; s->LRI = LRI_VALUE; s->URI = URI_VALUE;
+s->AVI = 0; s->vp_waiting_for_URI = 0; s->seen_AS_since_last_V = 0;
+} else {
+s->vp_waiting_for_URI = 1;
+}
+}
+
+
+// If we owe a VP but were blocked by URI, pace as soon as it expires
+if (s->vp_waiting_for_URI && s->URI == 0){
+s->VP = 1; s->VP_fired = 1; s->VP_led_ms = s->led_pulse_ms;
+s->VRP = VRP_VALUE; s->AEI = AEI_VALUE; s->LRI = LRI_VALUE; s->URI = URI_VALUE;
+s->AVI = 0; s->vp_waiting_for_URI = 0; s->seen_AS_since_last_V = 0;
+}
+
+
+// Raw senses are single-ms pulses; clear after consumption
+s->AS_raw = 0; s->VS_raw = 0;
+}
+
+
+void PMc_run_for_elapsed_ms(PacemakerC* s){
+while (s_ms_ticks){
+PMc_tick_1ms(s);
+s_ms_ticks--;
+}
+}
+
+
+void PMc_poll_and_clear_pulses(PacemakerC* s, int* AP_any, int* VP_any){
+if (AP_any) *AP_any = s->AP_fired; if (VP_any) *VP_any = s->VP_fired;
+s->AP_fired = 0; s->VP_fired = 0;
+}
+
+
+int PMc_led_AP_on(const PacemakerC* s){ return s->AP_led_ms > 0; }
+int PMc_led_VP_on(const PacemakerC* s){ return s->VP_led_ms > 0; }

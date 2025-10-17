@@ -1,0 +1,52 @@
+// =============================================
+// File: Pacemaker_C.c
+// =============================================
+#include <string.h>
+#include <sys/alt_alarm.h>
+#include "Pacemaker_C.h"
+
+
+// Module-local 1ms ticker
+static volatile alt_u32 s_ms_ticks = 0;
+static alt_alarm s_alarm;
+
+
+static alt_u32 PMc_alarm_cb(void* ctx){ (void)ctx; s_ms_ticks++; return 1; }
+
+
+int PMc_start_1ms_alarm(void){
+// Start at 1-tick period (Platform/BSP tick is 1 ms)
+return alt_alarm_start(&s_alarm, 1, PMc_alarm_cb, NULL);
+}
+
+
+static inline void dec_if_pos(int* t){ if (*t > 0) (*t)--; }
+
+
+void PMc_init(PacemakerC* s){
+memset(s, 0, sizeof(*s));
+s->led_pulse_ms = 25; // default visibility
+// Initial timers: LRI running so backup VP will eventually occur
+s->LRI = LRI_VALUE;
+}
+
+
+void PMc_set_led_pulse_ms(PacemakerC* s, int ms){ s->led_pulse_ms = (ms > 0 ? ms : 1); }
+
+
+// One 1-ms algorithm step
+static void PMc_tick_1ms(PacemakerC* s){
+// Decrement timers and LED stretch
+dec_if_pos(&s->AVI); dec_if_pos(&s->AEI); dec_if_pos(&s->PVARP);
+dec_if_pos(&s->VRP); dec_if_pos(&s->LRI); dec_if_pos(&s->URI);
+dec_if_pos(&s->AP_led_ms); dec_if_pos(&s->VP_led_ms);
+
+
+// Gate senses by refractory
+s->AS = (s->AS_raw && s->PVARP == 0);
+s->VS = (s->VS_raw && s->VRP == 0);
+
+
+// Default outputs this ms
+s->AP = 0; s->VP = 0;
+int PMc_led_VP_on(const PacemakerC* s){ return s->VP_led_ms > 0; }

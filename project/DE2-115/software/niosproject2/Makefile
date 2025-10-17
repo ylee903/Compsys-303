@@ -145,6 +145,7 @@ ELF := niosproject2.elf
 C_SRCS += hello_world.c
 C_SRCS += Pacemaker.c
 C_SRCS += main.c
+C_SRCS += Pacemaker_C.c
 CXX_SRCS :=
 ASM_SRCS :=
 
