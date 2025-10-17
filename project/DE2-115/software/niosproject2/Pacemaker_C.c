@@ -9,6 +9,8 @@
 static volatile alt_u32 s_ms_ticks = 0;
 static alt_alarm s_alarm;
 static int s_banner_printed = 0;
+/* NEW: running logical time (ms) for readable logs */
+static alt_u32 s_now_ms = 0;
 
 static alt_u32 PMc_alarm_cb(void* ctx) {
   (void)ctx;
@@ -49,71 +51,93 @@ void PMc_set_senses(PacemakerC* s, int AS_raw, int VS_raw) {
   }
 }
 
-/* One 1-ms algorithm step */
+/* One 1-ms algorithm step — fixed DDD semantics */
 static void PMc_tick_1ms(PacemakerC* s) {
+  /* advance logical time for logging */
+  s_now_ms++;
+
   /* Decrement timers and LED stretch */
   dec_if_pos(&s->AVI); dec_if_pos(&s->AEI); dec_if_pos(&s->PVARP);
   dec_if_pos(&s->VRP); dec_if_pos(&s->LRI); dec_if_pos(&s->URI);
   dec_if_pos(&s->AP_led_ms); dec_if_pos(&s->VP_led_ms);
 
-  /* Gate senses by refractory */
+  /* Gate senses by refractory (AR = in PVARP, VR = in VRP) */
   s->AS = (s->AS_raw && s->PVARP == 0);
   s->VS = (s->VS_raw && s->VRP   == 0);
 
   /* Default outputs this ms */
   s->AP = 0; s->VP = 0;
 
-  /* Intrinsic events first */
+  /* -------- INTRINSIC EVENTS FIRST -------- */
+
+  /* Ventricular sense: start post-V windows, reset A-tracking, stop A->V wait */
   if (s->VS) {
-    s->VRP = VRP_VALUE;
-    s->AEI = AEI_VALUE;
-    s->LRI = LRI_VALUE;
-    s->URI = URI_VALUE;
+    s->VRP = VRP_VALUE;          /* post-V ventricular refractory */
+    s->PVARP = PVARP_VALUE;      /* post-V atrial refractory (ONLY here) */
+    s->AEI = AEI_VALUE;          /* V->A interval */
+    s->LRI = LRI_VALUE;          /* backup V-V interval */
+    s->URI = URI_VALUE;          /* upper rate gate */
     s->seen_AS_since_last_V = 0;
-    s->AVI = 0;                /* inhibit any pending AVI-based VP */
-    s->vp_waiting_for_URI = 0; /* cancel pending VP */
+    s->AVI = 0;                  /* valid V cancels pending AVI */
+    s->vp_waiting_for_URI = 0;   /* clear any postponed VP */
   }
+
+  /* Atrial sense: stop AEI, (re)start AVI to wait for V, track that A happened */
   if (s->AS) {
-    s->PVARP = PVARP_VALUE;
-    s->AVI   = AVI_VALUE;      /* start A->V interval */
+    s->AEI = 0;                  /* stop V->A wait because A arrived */
+    s->AVI = AVI_VALUE;          /* start A->V wait */
     s->seen_AS_since_last_V = 1;
   }
 
-  /* Atrial pacing on AEI timeout (if no AS since last V) */
+  /* -------- PACING DECISIONS -------- */
+
+  /* Atrial pacing on AEI timeout ONLY if no AS since the last V */
   if (s->AEI == 0 && s->seen_AS_since_last_V == 0) {
     s->AP = 1; s->AP_fired = 1; s->AP_led_ms = s->led_pulse_ms;
-    s->PVARP = PVARP_VALUE;
-    s->AVI   = AVI_VALUE;
-    s->seen_AS_since_last_V = 1;
+
+    /* NEW: explain exactly why AP fired */
+    printf("[AP] %lu ms — AEI timeout with no atrial sense since last V. "
+           "(AEI=0, AVI=%d, PVARP=%d, VRP=%d, LRI=%d, URI=%d)\n",
+           (unsigned long)s_now_ms, s->AVI, s->PVARP, s->VRP, s->LRI, s->URI);
+    fflush(stdout);
+
+    /* After an AP: do NOT start PVARP (that is post-V only) */
+    s->AVI = AVI_VALUE;          /* now wait for V */
+    s->seen_AS_since_last_V = 1; /* we just created an atrial event */
   }
 
-  /* Ventricular pacing desire */
+  /* Ventricular pacing desire: from AVI timeout (when tracking A) or from LRI */
   {
     int want_VP = 0;
-    if (s->AVI == 0 && s->seen_AS_since_last_V) want_VP = 1;
-    if (s->LRI == 0)                            want_VP = 1;
+    if (s->AVI == 0 && s->seen_AS_since_last_V) want_VP = 1; /* A-tracked pair */
+    if (s->LRI == 0)                            want_VP = 1; /* backup rate */
 
     if (want_VP) {
       if (s->URI == 0) {
+        /* Deliver VP now */
         s->VP = 1; s->VP_fired = 1; s->VP_led_ms = s->led_pulse_ms;
-        s->VRP = VRP_VALUE; s->AEI = AEI_VALUE; s->LRI = LRI_VALUE; s->URI = URI_VALUE;
+        s->VRP = VRP_VALUE; s->PVARP = PVARP_VALUE;
+        s->AEI = AEI_VALUE; s->LRI = LRI_VALUE; s->URI = URI_VALUE;
         s->AVI = 0; s->vp_waiting_for_URI = 0; s->seen_AS_since_last_V = 0;
       } else {
+        /* URI still active → postpone VP until URI expires */
         s->vp_waiting_for_URI = 1;
       }
     }
 
-    /* If we owe a VP but were blocked by URI, pace as soon as it expires */
+    /* If a VP was postponed by URI, fire it as soon as URI expires */
     if (s->vp_waiting_for_URI && s->URI == 0) {
       s->VP = 1; s->VP_fired = 1; s->VP_led_ms = s->led_pulse_ms;
-      s->VRP = VRP_VALUE; s->AEI = AEI_VALUE; s->LRI = LRI_VALUE; s->URI = URI_VALUE;
+      s->VRP = VRP_VALUE; s->PVARP = PVARP_VALUE;
+      s->AEI = AEI_VALUE; s->LRI = LRI_VALUE; s->URI = URI_VALUE;
       s->AVI = 0; s->vp_waiting_for_URI = 0; s->seen_AS_since_last_V = 0;
     }
   }
 
-  /* Raw senses are one-ms pulses; clear after consumption */
+  /* Raw senses are 1-ms pulses; clear after consumption */
   s->AS_raw = 0; s->VS_raw = 0;
 }
+
 
 void PMc_run_for_elapsed_ms(PacemakerC* s) {
   while (s_ms_ticks) {
