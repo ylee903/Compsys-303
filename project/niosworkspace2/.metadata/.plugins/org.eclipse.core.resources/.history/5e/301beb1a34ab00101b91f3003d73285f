@@ -1,0 +1,68 @@
+#ifndef PACEMAKER_C_H
+#define PACEMAKER_C_H
+
+#include "timing.h"
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+typedef struct {
+  /* runtime config (which “state” we’re testing) */
+  int cfg_sa_on;      /* 1 = SA autorhythmic ON */
+  int cfg_av_on;      /* 1 = AV autorhythmic ON */
+  int cfg_cond_on;    /* 1 = AV conduction ON (A->V path works) */
+
+  /* raw inputs (caller sets before stepping) */
+  int AS_raw;
+  int VS_raw;
+
+  /* gated senses (after refractory) */
+  int AS;
+  int VS;
+
+  /* one-tick outputs */
+  int AP;
+  int VP;
+
+  /* sticky flags (cleared by poll) */
+  int AP_fired;
+  int VP_fired;
+
+  /* timers (ms) */
+  int AVI, AEI, PVARP, VRP, LRI, URI;
+
+  /* book-keeping */
+  int v_since_current_A;
+  int pending_vp_avi;
+
+  /* cosmetic (optional LED stretch) */
+  int led_pulse_ms;
+  int AP_led_ms;
+  int VP_led_ms;
+} PacemakerC;
+
+/* ---- Lifecycle ---- */
+void PMc_init(PacemakerC* s);
+void PMc_set_led_pulse_ms(PacemakerC* s, int ms);
+
+/* ---- Config: choose which of the 8 ON/OFF states we’re simulating ---- */
+void PMc_config(PacemakerC* s, int sa_on, int av_on, int cond_on);
+
+/* ---- Timing driver (call once per 1 ms) ---- */
+int  PMc_start_1ms_alarm(void);              /* stub; returns 0 */
+void PMc_run_for_elapsed_ms(PacemakerC* s);  /* advances 1 ms */
+
+/* ---- Inputs ---- */
+void PMc_set_senses(PacemakerC* s, int AS_raw, int VS_raw);
+
+/* ---- Outputs / status ---- */
+void PMc_poll_and_clear_pulses(PacemakerC* s, int* AP_any, int* VP_any);
+int  PMc_led_AP_on(const PacemakerC* s);
+int  PMc_led_VP_on(const PacemakerC* s);
+
+#ifdef __cplusplus
+}
+#endif
+
+#endif /* PACEMAKER_C_H */

@@ -1,0 +1,66 @@
+#ifndef PACEMAKER_C_H
+#define PACEMAKER_C_H
+
+#include "timing.h"  /* AVI_VALUE, AEI_VALUE, PVARP_VALUE, VRP_VALUE, LRI_VALUE, URI_VALUE */
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+/* Minimal state focused on Case 2 (SA=1, AV=1, Conduction=0) */
+typedef struct {
+  /* raw inputs (caller sets before stepping) */
+  int AS_raw;
+  int VS_raw;
+
+  /* gated senses (after refractory) */
+  int AS;
+  int VS;
+
+  /* one-tick outputs */
+  int AP;      /* not used in Case 2 (always 0) */
+  int VP;
+
+  /* sticky flags (cleared by poll) */
+  int AP_fired;
+  int VP_fired;
+
+  /* timers (ms) */
+  int AVI;       /* A→V interval (key timer in Case 2) */
+  int AEI;       /* unused here, kept for completeness */
+  int PVARP;     /* post-V atrial refractory */
+  int VRP;       /* post-V ventricular refractory */
+  int LRI;       /* unused here, kept for completeness */
+  int URI;       /* upper rate interval for V pacing */
+
+  /* book-keeping */
+  int v_since_current_A;   /* 1 if a VS/VP occurred since the last A-event */
+  int pending_vp_avi;      /* set if AVI expired but URI blocked pacing */
+
+  /* cosmetic (optional LED stretch) */
+  int led_pulse_ms;
+  int AP_led_ms;
+  int VP_led_ms;
+} PacemakerC;
+
+/* ---- Lifecycle ---- */
+void PMc_init(PacemakerC* s);
+void PMc_set_led_pulse_ms(PacemakerC* s, int ms);
+
+/* ---- Timing driver (no hardware/ISR; call once per 1 ms) ---- */
+int  PMc_start_1ms_alarm(void);     /* stub: returns 0 (success) */
+void PMc_run_for_elapsed_ms(PacemakerC* s);  /* advances 1 ms */
+
+/* ---- Inputs ---- */
+void PMc_set_senses(PacemakerC* s, int AS_raw, int VS_raw);
+
+/* ---- Outputs / status ---- */
+void PMc_poll_and_clear_pulses(PacemakerC* s, int* AP_any, int* VP_any);
+int  PMc_led_AP_on(const PacemakerC* s);
+int  PMc_led_VP_on(const PacemakerC* s);
+
+#ifdef __cplusplus
+}
+#endif
+
+#endif /* PACEMAKER_C_H */

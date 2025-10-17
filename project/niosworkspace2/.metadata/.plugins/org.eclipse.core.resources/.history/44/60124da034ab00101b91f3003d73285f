@@ -1,0 +1,67 @@
+#ifndef PACEMAKER_C_H
+#define PACEMAKER_C_H
+
+#include "timing.h"  /* AVI_VALUE, AEI_VALUE, PVARP_VALUE, VRP_VALUE, LRI_VALUE, URI_VALUE */
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+/* DDD (inhibited) with backup: Normal heart case (SA=1, AV=1, Conduction=1) */
+typedef struct {
+  /* raw inputs (caller sets before stepping; treated as 1 ms pulses) */
+  int AS_raw;
+  int VS_raw;
+
+  /* gated senses (after refractory) */
+  int AS;
+  int VS;
+
+  /* one-tick outputs */
+  int AP;
+  int VP;
+
+  /* sticky flags (cleared by poll) */
+  int AP_fired;
+  int VP_fired;
+
+  /* timers (ms; countdown; 0 means expired/not-running) */
+  int AVI;       /* A→V window: VP if expires without VS (URI-gated) */
+  int AEI;       /* V→A window: AP if expires without AS */
+  int PVARP;     /* post-V atrial refractory (gates AS) */
+  int VRP;       /* post-V ventricular refractory (gates VS) */
+  int LRI;       /* lower rate interval: backup VP if V–V too long (URI-gated) */
+  int URI;       /* upper rate interval: min time between V paces */
+
+  /* bookkeeping */
+  int seen_AS_since_last_V;   /* 1 after AS/AP until a V (VS/VP) happens */
+  int pending_vp_avi;         /* we owe a VP due to AVI expiry but URI blocked */
+  int pending_vp_lri;         /* we owe a VP due to LRI expiry but URI blocked */
+
+  /* cosmetic (optional LED stretch) */
+  int led_pulse_ms;
+  int AP_led_ms;
+  int VP_led_ms;
+} PacemakerC;
+
+/* ---- Lifecycle ---- */
+void PMc_init(PacemakerC* s);
+void PMc_set_led_pulse_ms(PacemakerC* s, int ms);
+
+/* ---- Timing driver (no hardware timer; call once per 1 ms) ---- */
+int  PMc_start_1ms_alarm(void);           /* stub: returns 0 */
+void PMc_run_for_elapsed_ms(PacemakerC* s);
+
+/* ---- Inputs ---- */
+void PMc_set_senses(PacemakerC* s, int AS_raw, int VS_raw);
+
+/* ---- Outputs / status ---- */
+void PMc_poll_and_clear_pulses(PacemakerC* s, int* AP_any, int* VP_any);
+int  PMc_led_AP_on(const PacemakerC* s);
+int  PMc_led_VP_on(const PacemakerC* s);
+
+#ifdef __cplusplus
+}
+#endif
+
+#endif /* PACEMAKER_C_H */

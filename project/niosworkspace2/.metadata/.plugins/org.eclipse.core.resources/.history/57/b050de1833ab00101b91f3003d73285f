@@ -1,0 +1,37 @@
+#ifndef PACEMAKER_C_H
+#define PACEMAKER_C_H
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+/* Minimal no-op pacemaker state (kept small on purpose) */
+typedef struct {
+  int AS_raw, VS_raw;   /* inputs (latched by caller, unused here) */
+  int AP, VP;           /* one-tick outputs (always 0 in no-op) */
+  int AP_fired, VP_fired;
+  int led_pulse_ms;     /* unused; kept to satisfy callers */
+  int AP_led_ms, VP_led_ms;
+} PacemakerC;
+
+/* ---- Lifecycle ---- */
+void PMc_init(PacemakerC* s);
+void PMc_set_led_pulse_ms(PacemakerC* s, int ms);
+
+/* ---- 1 ms timing (no-op stubs) ---- */
+int  PMc_start_1ms_alarm(void);
+void PMc_run_for_elapsed_ms(PacemakerC* s);
+
+/* ---- Inputs for next ms window ---- */
+void PMc_set_senses(PacemakerC* s, int AS_raw, int VS_raw);
+
+/* ---- Outputs / status ---- */
+void PMc_poll_and_clear_pulses(PacemakerC* s, int* AP_any, int* VP_any);
+int  PMc_led_AP_on(const PacemakerC* s);
+int  PMc_led_VP_on(const PacemakerC* s);
+
+#ifdef __cplusplus
+}
+#endif
+
+#endif /* PACEMAKER_C_H */

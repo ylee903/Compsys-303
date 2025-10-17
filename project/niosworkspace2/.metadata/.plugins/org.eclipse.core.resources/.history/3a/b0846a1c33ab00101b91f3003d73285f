@@ -1,0 +1,46 @@
+#include "Pacemaker_C.h"
+#include <string.h>
+
+/* No hardware, no timers — everything is a stub. */
+
+int PMc_start_1ms_alarm(void) {
+  /* Pretend it started successfully. */
+  return 0;
+}
+
+void PMc_init(PacemakerC* s) {
+  if (!s) return;
+  memset(s, 0, sizeof(*s));
+  s->led_pulse_ms = 0;
+}
+
+void PMc_set_led_pulse_ms(PacemakerC* s, int ms) {
+  if (!s) return;
+  s->led_pulse_ms = ms;
+}
+
+void PMc_set_senses(PacemakerC* s, int AS_raw, int VS_raw) {
+  if (!s) return;
+  s->AS_raw = AS_raw;
+  s->VS_raw = VS_raw;
+}
+
+void PMc_run_for_elapsed_ms(PacemakerC* s) {
+  (void)s; /* do nothing */
+}
+
+void PMc_poll_and_clear_pulses(PacemakerC* s, int* AP_any, int* VP_any) {
+  if (AP_any) *AP_any = 0;
+  if (VP_any) *VP_any = 0;
+  if (!s) return;
+  s->AP = 0; s->VP = 0;
+  s->AP_fired = 0; s->VP_fired = 0;
+}
+
+int PMc_led_AP_on(const PacemakerC* s) {
+  (void)s; return 0;
+}
+
+int PMc_led_VP_on(const PacemakerC* s) {
+  (void)s; return 0;
+}

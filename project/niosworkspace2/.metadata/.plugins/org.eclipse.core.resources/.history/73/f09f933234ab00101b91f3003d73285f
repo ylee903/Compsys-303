@@ -1,0 +1,51 @@
+#include "Pacemaker_C.h"
+#include <string.h>
+
+/* -------- helpers -------- */
+static inline void dec_if_pos(int* t){ if(*t>0)--(*t); }
+
+/* -------- lifecycle -------- */
+void PMc_init(PacemakerC* s){
+  if(!s) return;
+  memset(s,0,sizeof(*s));
+
+  /* Start with V-side timers so we have immediate backup if needed */
+  s->AEI = AEI_VALUE;  /* expect an AS within AEI after a V */
+  s->LRI = LRI_VALUE;  /* expect next V within LRI */
+  s->URI = 0;          /* allow pacing at start */
+
+  s->seen_AS_since_last_V = 0;
+  s->led_pulse_ms = 0;
+}
+
+void PMc_set_led_pulse_ms(PacemakerC* s,int ms){
+  if(!s) return; s->led_pulse_ms = (ms>0?ms:0);
+}
+
+int PMc_start_1ms_alarm(void){ return 0; } /* no hardware timer */
+
+/* Caller sets inputs before each tick */
+void PMc_set_senses(PacemakerC* s,int AS_raw,int VS_raw){
+  if(!s) return;
+  s->AS_raw = AS_raw?1:0;
+  s->VS_raw = VS_raw?1:0;
+}
+
+/* -------- one 1 ms step -------- */
+static void PMc_tick_1ms(PacemakerC* s){
+  /* clear one-tick outputs */
+  s->AP = 0; s->VP = 0;
+
+  /* timers */
+  dec_if_pos(&s->AVI);
+  dec_if_pos(&s->AEI);
+  dec_if_pos(&s->PVARP);
+  dec_if_pos(&s->VRP);
+  dec_if_pos(&s->LRI);
+  dec_if_pos(&s->URI);
+  dec_if_pos(&s->AP_led_ms);
+  dec_if_pos(&s->VP_led_ms);
+
+  /* gate senses by refractory */
+  s->AS = (s->AS_raw && s->PVARP==0) ? 1:0;   /* PVARP gates AS */
+  s->VS =

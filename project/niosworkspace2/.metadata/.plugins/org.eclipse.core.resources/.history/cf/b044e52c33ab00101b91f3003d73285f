@@ -1,0 +1,54 @@
+#include "Pacemaker_C.h"
+#include <string.h>
+
+/* ---------- helpers ---------- */
+static inline void dec_if_pos(int* t) { if (*t > 0) (*t)--; }
+
+/* ---------- public: lifecycle ---------- */
+void PMc_init(PacemakerC* s) {
+  if (!s) return;
+  memset(s, 0, sizeof(*s));
+
+  /* Defaults (only the V-side is active in Case 2) */
+  s->AVI = 0;
+  s->AEI = 0;
+  s->PVARP = 0;
+  s->VRP = 0;
+  s->LRI = 0;
+  s->URI = 0;
+
+  s->v_since_current_A = 1;   /* no A yet, treat as if V already occurred */
+  s->pending_vp_avi = 0;
+
+  s->led_pulse_ms = 0;
+  s->AP_led_ms = s->VP_led_ms = 0;
+}
+
+void PMc_set_led_pulse_ms(PacemakerC* s, int ms) {
+  if (!s) return;
+  s->led_pulse_ms = (ms > 0 ? ms : 0);
+}
+
+/* No hardware timers in this drop: pretend success */
+int PMc_start_1ms_alarm(void) { return 0; }
+
+/* Caller should set AS_raw/VS_raw before calling this each 1 ms */
+void PMc_set_senses(PacemakerC* s, int AS_raw, int VS_raw) {
+  if (!s) return;
+  s->AS_raw = AS_raw ? 1 : 0;
+  s->VS_raw = VS_raw ? 1 : 0;
+}
+
+/* ---------- core 1 ms step (Case 2) ---------- */
+static void PMc_tick_1ms(PacemakerC* s) {
+  /* clear one-tick outputs */
+  s->AP = 0; s->VP = 0;
+
+  /* decrement timers */
+  dec_if_pos(&s->AVI);
+  dec_if_pos(&s->AEI);
+  dec_if_pos(&s->PVARP);
+  dec_if_pos(&s->VRP);
+  dec_if_pos(&s->LRI);
+  dec_if_pos(&s->URI);
+  dec_if_pos(&s->AP_l_

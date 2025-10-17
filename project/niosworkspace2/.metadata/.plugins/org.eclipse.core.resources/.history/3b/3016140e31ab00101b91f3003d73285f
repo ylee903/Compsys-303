@@ -1,0 +1,185 @@
+#include <string.h>
+#include <stdio.h>
+#include <sys/alt_alarm.h>
+#include <altera_avalon_pio_regs.h>
+#include <system.h>
+
+#include "Pacemaker_C.h"
+
+/* ---------------- 1 ms alarm ticker ---------------- */
+static volatile alt_u32 s_ms_ticks = 0;
+static alt_alarm s_alarm;
+static int s_banner_printed = 0;
+
+static alt_u32 PMc_alarm_cb(void* ctx) {
+  (void)ctx;
+  s_ms_ticks++;
+  return 1; /* schedule next callback in 1 ms */
+}
+
+int PMc_start_1ms_alarm(void) {
+  int r = alt_alarm_start(&s_alarm, 1, PMc_alarm_cb, NULL);
+  if (!s_banner_printed) {
+    s_banner_printed = 1;
+    printf("[C-MODE] C pacemaker running (ISR 1ms tick active)\n");
+    fflush(stdout);
+  }
+  return r;
+}
+
+/* ---------------- helpers ---------------- */
+static void incr_cap(unsigned* t) {
+  if (*t < 0x7FFFFFFFu) (*t)++;
+}
+
+static void dec_if_pos(int* t) {
+  if (*t > 0) (*t)--;
+}
+
+/* ---------------- lifecycle ---------------- */
+void PMc_init(PacemakerC* s) {
+  memset(s, 0, sizeof(*s));
+  s->led_pulse_ms = 25;      /* human-visible default */
+  /* On reset, no timers are running; start LRI at 0 so backup VP will eventually occur */
+  s->LRI = 0;
+}
+
+void PMc_set_led_pulse_ms(PacemakerC* s, int ms) {
+  s->led_pulse_ms = (ms > 0 ? ms : 1);
+}
+
+/* Caller provides single-ms pulses (AS_raw/VS_raw). We also add a KEY2 sanity print. */
+void PMc_set_senses(PacemakerC* s, int AS_raw, int VS_raw) {
+  s->AS_raw = AS_raw ? 1 : 0;
+  s->VS_raw = VS_raw ? 1 : 0;
+
+  /* Sanity button: KEY2 active-low */
+  {
+    alt_u32 keys = IORD_ALTERA_AVALON_PIO_DATA(KEYS_BASE);
+    if ((keys & 0x04) == 0) {
+      printf("[C-MODE] Sanity button (KEY2) pressed — C version confirmed running.\n");
+      fflush(stdout);
+    }
+  }
+}
+
+/* ---------------- single 1 ms algorithm step ---------------- */
+static void PMc_tick_1ms(PacemakerC* s) {
+  /* 0) clear one-tick outputs and accepted event flags */
+  s->AP = 0; s->VP = 0;
+  s->A_EVT = 0; s->V_EVT = 0;
+
+  /* 1) increment all running timers (free-running) */
+  incr_cap(&s->AVI);
+  incr_cap(&s->AEI);
+  incr_cap(&s->PVARP);
+  incr_cap(&s->VRP);
+  incr_cap(&s->LRI);
+  incr_cap(&s->URI);
+
+  /* 2) update LED stretch counters */
+  dec_if_pos(&s->AP_led_ms);
+  dec_if_pos(&s->VP_led_ms);
+
+  /* 3) refractory gating of the raw senses */
+  {
+    int VS_ok = (s->VS_raw && !s->vent_ref);
+    int AS_ok = (s->AS_raw && !s->atrial_ref);
+    if (AS_ok) s->A_EVT = 1;
+    if (VS_ok) s->V_EVT = 1;
+  }
+
+  /* 4) ventricular event (sensed) → start URI/VRP/PVARP, reset AEI/LRI */
+  if (s->V_EVT) {
+    s->URI = 0;  s->uri_active = 1;
+    s->VRP = 0;  s->vent_ref   = 1;
+    s->PVARP = 0; s->atrial_ref = 1;
+    s->AEI = 0;
+    s->LRI = 0;
+    /* cancel any pending V-pace requests; intrinsic V satisfied them */
+    s->pending_vp_avi = 0;
+    s->pending_vp_lri = 0;
+    s->seen_A_since_last_V = 0;
+  }
+
+  /* 5) atrial event (sensed) → reset AVI */
+  if (s->A_EVT) {
+    s->AVI = 0;
+    s->seen_A_since_last_V = 1;
+  }
+
+  /* 6) end of refractory/URI windows (compare counters against constants) */
+  if (s->vent_ref   && s->VRP   >= (unsigned)VRP_VALUE)   s->vent_ref = 0;
+  if (s->atrial_ref && s->PVARP >= (unsigned)PVARP_VALUE) s->atrial_ref = 0;
+  if (s->uri_active && s->URI   >= (unsigned)URI_VALUE)   s->uri_active = 0;
+
+  /* 7) atrial pacing (AP) if AEI expired without any A event this tick */
+  if ((s->AEI >= (unsigned)AEI_VALUE) && !s->A_EVT) {
+    s->AP = 1; s->AP_fired = 1; s->AP_led_ms = s->led_pulse_ms;
+    /* treat AP as an atrial event */
+    s->A_EVT = 1;
+    s->AVI = 0;
+    s->seen_A_since_last_V = 1;
+  }
+
+  /* 8) handle deferred V paces that were blocked by URI and just became allowed */
+  if (!s->uri_active && (s->pending_vp_avi || s->pending_vp_lri)) {
+    s->VP = 1; s->VP_fired = 1; s->VP_led_ms = s->led_pulse_ms;
+    s->pending_vp_avi = 0;
+    s->pending_vp_lri = 0;
+  }
+
+  /* 9) AVI-driven ventricular pacing (respect URI; one-shot latch while blocked) */
+  if ((s->AVI >= (unsigned)AVI_VALUE) && !s->V_EVT && !s->VP) {
+    if (!s->uri_active) {
+      s->VP = 1; s->VP_fired = 1; s->VP_led_ms = s->led_pulse_ms;
+    } else {
+      /* Remember we owe a VP because AVI expired, but URI blocks it. */
+      if (!s->pending_vp_avi) s->pending_vp_avi = 1;
+    }
+  }
+
+  /* 10) LRI-driven backup ventricular pacing (also URI-gated, with a latch) */
+  if ((s->LRI >= (unsigned)LRI_VALUE) && !s->V_EVT && !s->VP) {
+    if (!s->uri_active) {
+      s->VP = 1; s->VP_fired = 1; s->VP_led_ms = s->led_pulse_ms;
+    } else {
+      if (!s->pending_vp_lri) s->pending_vp_lri = 1;
+    }
+  }
+
+  /* 11) if we produced VP this tick, that itself is a ventricular event */
+  if (s->VP) {
+    s->V_EVT = 1;
+    s->URI = 0;  s->uri_active = 1;
+    s->VRP = 0;  s->vent_ref   = 1;
+    s->PVARP = 0; s->atrial_ref = 1;
+    s->AEI = 0;
+    s->LRI = 0;
+    s->AVI = 0;                 /* close A→V loop */
+    s->seen_A_since_last_V = 0;
+  }
+
+  /* 12) clear the raw sense pulses (they are single-ms) */
+  s->AS_raw = 0;
+  s->VS_raw = 0;
+}
+
+/* ---------------- top-level stepping ---------------- */
+void PMc_run_for_elapsed_ms(PacemakerC* s) {
+  while (s_ms_ticks) {
+    PMc_tick_1ms(s);
+    s_ms_ticks--;
+  }
+}
+
+/* ---------------- outputs / status ---------------- */
+void PMc_poll_and_clear_pulses(PacemakerC* s, int* AP_any, int* VP_any) {
+  if (AP_any) *AP_any = s->AP_fired;
+  if (VP_any) *VP_any = s->VP_fired;
+  s->AP_fired = 0;
+  s->VP_fired = 0;
+}
+
+int PMc_led_AP_on(const PacemakerC* s) { return (s->AP_led_ms > 0); }
+int PMc_led_VP_on(const PacemakerC* s) { return (s->VP_led_ms > 0); }

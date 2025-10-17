@@ -1,0 +1,51 @@
+#include <string.h>
+#include <stdio.h>
+#include <sys/alt_alarm.h>
+#include <altera_avalon_pio_regs.h>
+#include <system.h>
+#include "Pacemaker_C.h"
+
+/* ---------- 1 ms ticker ---------- */
+static volatile alt_u32 s_ms_ticks = 0;
+static alt_alarm s_alarm;
+static int s_banner_printed = 0;
+
+static alt_u32 PMc_alarm_cb(void* ctx) { (void)ctx; s_ms_ticks++; return 1; }
+
+int PMc_start_1ms_alarm(void){
+  int r = alt_alarm_start(&s_alarm, 1, PMc_alarm_cb, NULL);
+  if(!s_banner_printed){
+    s_banner_printed = 1;
+    printf("[C-MODE] Pacemaker C started (1 ms ISR)\n");
+    fflush(stdout);
+  }
+  return r;
+}
+
+static inline void dec_if_pos(int* t){ if(*t>0) --*t; }
+
+/* ---------- lifecycle ---------- */
+void PMc_init(PacemakerC* s){
+  memset(s,0,sizeof(*s));
+  s->led_pulse_ms = 25;   /* visible LED pulse */
+  s->LRI = LRI_VALUE;     /* ensure backup starts finite */
+}
+
+void PMc_set_led_pulse_ms(PacemakerC* s,int ms){ s->led_pulse_ms = (ms>0)?ms:1; }
+
+void PMc_set_senses(PacemakerC* s,int AS_raw,int VS_raw){
+  s->AS_raw = AS_raw;
+  s->VS_raw = VS_raw;
+
+  /* Optional field sanity probe via KEY2 */
+  alt_u32 keys = IORD_ALTERA_AVALON_PIO_DATA(KEYS_BASE);
+  if((keys & 0x04)==0){
+    static int once=0; if(!once){ printf("[C-MODE] KEY2 sanity press\n"); fflush(stdout); once=1; }
+  }
+}
+
+/* Helper: apply post-ventricular effects for either VS or VP */
+static inline void do_post_ventricular(PacemakerC* s, int paced){
+  if(paced){
+    s->VP = 1; s->VP_fired = 1; s->VP_led_ms = s->led_pulse_ms;
+  }

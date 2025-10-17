@@ -1,0 +1,127 @@
+#include "Pacemaker_C.h"
+#include <string.h>
+
+static inline void dec_if_pos(int* t) { if (*t > 0) (*t)--; }
+
+void PMc_init(PacemakerC* s) {
+  if (!s) return;
+  memset(s, 0, sizeof(*s));
+  s->led_pulse_ms = 0;
+  /* default to normal state unless changed by PMc_config */
+  s->cfg_sa_on   = 1;
+  s->cfg_av_on   = 1;
+  s->cfg_cond_on = 1;
+}
+
+void PMc_set_led_pulse_ms(PacemakerC* s, int ms) {
+  if (!s) return;
+  s->led_pulse_ms = (ms > 0 ? ms : 0);
+}
+
+void PMc_config(PacemakerC* s, int sa_on, int av_on, int cond_on) {
+  if (!s) return;
+  s->cfg_sa_on   = !!sa_on;
+  s->cfg_av_on   = !!av_on;
+  s->cfg_cond_on = !!cond_on;
+}
+
+int PMc_start_1ms_alarm(void) { return 0; }
+
+void PMc_set_senses(PacemakerC* s, int AS_raw, int VS_raw) {
+  if (!s) return;
+  s->AS_raw = AS_raw ? 1 : 0;
+  s->VS_raw = VS_raw ? 1 : 0;
+}
+
+static void PMc_tick_case2(PacemakerC* s) {
+  /* Case 2: SA=1, AV=1, COND=0 (restore AV synchrony with AVI->VP) */
+  s->AP = 0; s->VP = 0;
+
+  dec_if_pos(&s->AVI); dec_if_pos(&s->AEI);
+  dec_if_pos(&s->PVARP); dec_if_pos(&s->VRP);
+  dec_if_pos(&s->LRI); dec_if_pos(&s->URI);
+  dec_if_pos(&s->AP_led_ms); dec_if_pos(&s->VP_led_ms);
+
+  s->AS = (s->AS_raw && s->PVARP == 0) ? 1 : 0;
+  s->VS = (s->VS_raw && s->VRP   == 0) ? 1 : 0;
+
+  if (s->VS) {
+    s->VRP = VRP_VALUE;
+    s->PVARP = PVARP_VALUE;
+    s->URI = URI_VALUE;
+    s->v_since_current_A = 1;
+    s->pending_vp_avi = 0;
+    s->AVI = 0;
+  }
+
+  if (s->AS) {
+    s->AVI = AVI_VALUE;
+    s->v_since_current_A = 0;
+  }
+
+  if (!s->v_since_current_A) {
+    if (s->AVI == 0) {
+      if (s->URI == 0) {
+        s->VP = 1; s->VP_fired = 1; s->VP_led_ms = s->led_pulse_ms;
+        s->VRP = VRP_VALUE; s->PVARP = PVARP_VALUE; s->URI = URI_VALUE;
+        s->v_since_current_A = 1; s->pending_vp_avi = 0; s->AVI = 0;
+      } else {
+        s->pending_vp_avi = 1;
+      }
+    }
+  }
+
+  if (s->pending_vp_avi && s->URI == 0 && !s->v_since_current_A) {
+    s->VP = 1; s->VP_fired = 1; s->VP_led_ms = s->led_pulse_ms;
+    s->VRP = VRP_VALUE; s->PVARP = PVARP_VALUE; s->URI = URI_VALUE;
+    s->v_since_current_A = 1; s->pending_vp_avi = 0; s->AVI = 0;
+  }
+
+  s->AS_raw = 0; s->VS_raw = 0;
+}
+
+void PMc_run_for_elapsed_ms(PacemakerC* s) {
+  if (!s) return;
+
+  /* Always clear one-tick outputs at start of the ms */
+  s->AP = 0; s->VP = 0;
+
+  /* Normal heart: SA=1, AV=1, COND=1 → FULL INHIBITION
+     We still decrement/gate for clean telemetry, but NEVER pace. */
+  if (s->cfg_sa_on && s->cfg_av_on && s->cfg_cond_on) {
+    dec_if_pos(&s->PVARP); dec_if_pos(&s->VRP);
+    dec_if_pos(&s->URI);   /* harmless upkeep */
+    dec_if_pos(&s->AP_led_ms); dec_if_pos(&s->VP_led_ms);
+
+    s->AS = (s->AS_raw && s->PVARP == 0) ? 1 : 0;
+    s->VS = (s->VS_raw && s->VRP   == 0) ? 1 : 0;
+
+    /* NO AP/VP here — inhibited by definition in the normal state. */
+    s->AS_raw = 0; s->VS_raw = 0;
+    return;
+  }
+
+  /* Case 2 explicitly: SA=1, AV=1, COND=0 */
+  if (s->cfg_sa_on && s->cfg_av_on && !s->cfg_cond_on) {
+    PMc_tick_case2(s);
+    return;
+  }
+
+  /* Other states not implemented yet: behave as safe inhibit (no pacing). */
+  dec_if_pos(&s->PVARP); dec_if_pos(&s->VRP);
+  dec_if_pos(&s->AP_led_ms); dec_if_pos(&s->VP_led_ms);
+  s->AS = (s->AS_raw && s->PVARP == 0) ? 1 : 0;
+  s->VS = (s->VS_raw && s->VRP   == 0) ? 1 : 0;
+  s->AS_raw = 0; s->VS_raw = 0;
+}
+
+void PMc_poll_and_clear_pulses(PacemakerC* s, int* AP_any, int* VP_any) {
+  if (AP_any) *AP_any = s->AP_fired;
+  if (VP_any) *VP_any = s->VP_fired;
+  if (!s) return;
+  s->AP_fired = 0;
+  s->VP_fired = 0;
+}
+
+int PMc_led_AP_on(const PacemakerC* s) { (void)s; return 0; }
+int PMc_led_VP_on(const PacemakerC* s) { return (s && s->VP_led_ms > 0) ? 1 : 0; }

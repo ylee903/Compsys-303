@@ -1,0 +1,143 @@
+#include <string.h>
+#include <stdio.h>
+#include <sys/alt_alarm.h>
+#include <altera_avalon_pio_regs.h>
+#include <system.h>
+#include "Pacemaker_C.h"
+
+/* ===== 1 ms heartbeat via alt_alarm ===================================== */
+static volatile alt_u32 s_ms_ticks = 0;
+static alt_alarm s_alarm;
+static int banner_once = 0;
+
+static alt_u32 alarm_cb(void* ctx){ (void)ctx; s_ms_ticks++; return 1; }
+
+int PMc_start_1ms_alarm(void){
+  int r = alt_alarm_start(&s_alarm, 1, alarm_cb, NULL);
+  if(!banner_once){
+    banner_once = 1;
+    printf("[C] Pacemaker C-mode running (1ms ISR)\n");
+    fflush(stdout);
+  }
+  return r;
+}
+
+static inline void dec_if_pos(int* t){ if(*t>0) --*t; }
+
+/* ===== AEI grace (inhibit AP briefly after AEI expiry) =================== */
+#define AEI_GRACE_MS 120
+static int s_AEI_grace = 0;   /* file-scope since we have a single instance */
+
+/* ===== lifecycle ========================================================= */
+void PMc_init(PacemakerC* s){
+  memset(s, 0, sizeof(*s));
+  s->led_pulse_ms = 25;
+  s->LRI = LRI_VALUE;            /* inhibited V–V backup starts finite */
+  s_AEI_grace = 0;
+}
+
+void PMc_set_led_pulse_ms(PacemakerC* s, int ms){ s->led_pulse_ms = (ms>0)?ms:1; }
+
+void PMc_set_senses(PacemakerC* s, int AS_raw, int VS_raw){
+  s->AS_raw = AS_raw;
+  s->VS_raw = VS_raw;
+
+  /* Optional sanity probe via KEY2 */
+  alt_u32 keys = IORD_ALTERA_AVALON_PIO_DATA(KEYS_BASE);
+  if((keys & 0x04)==0){ static int once=0; if(!once){ printf("[C] KEY2 sanity press\n"); fflush(stdout); once=1; } }
+}
+
+/* Apply all post-ventricular effects (for VS or VP) */
+static inline void post_ventricular(PacemakerC* s, int paced){
+  if(paced){
+    s->VP = 1; s->VP_fired = 1; s->VP_led_ms = s->led_pulse_ms;
+  }
+  /* Refractory & timers strictly POST-V */
+  s->VRP   = VRP_VALUE;
+  s->PVARP = PVARP_VALUE;
+  s->AEI   = AEI_VALUE;      /* V→A escape */
+  s->LRI   = LRI_VALUE;      /* V–V lower rate */
+  s->URI   = URI_VALUE;      /* V–V upper rate */
+
+  s->AVI = 0;                /* cancel any A→V on a V */
+  s->seen_AS_since_last_V = 0;
+  s->vp_waiting_for_URI   = 0;   /* cancel deferred AVI VP */
+  s_AEI_grace = 0;               /* cancel any pending grace */
+}
+
+/* ===== one 1 ms algorithm step ========================================== */
+static void PMc_tick_1ms(PacemakerC* s){
+  /* Countdowns & LEDs */
+  dec_if_pos(&s->AVI);  dec_if_pos(&s->AEI);  dec_if_pos(&s->PVARP);
+  dec_if_pos(&s->VRP);  dec_if_pos(&s->LRI);  dec_if_pos(&s->URI);
+  dec_if_pos(&s->AP_led_ms); dec_if_pos(&s->VP_led_ms);
+  if(s_AEI_grace>0) --s_AEI_grace;
+
+  /* Refractory gating */
+  s->AS = (s->AS_raw && s->PVARP==0);
+  s->VS = (s->VS_raw && s->VRP  ==0);
+
+  /* 1-ms pulses */
+  s->AP = 0; s->VP = 0;
+
+  /* ---- Intrinsic events first ---- */
+  if(s->VS){ post_ventricular(s, /*paced=*/0); }
+
+  if(s->AS){
+    s->AVI = AVI_VALUE;            /* start A→V tracking */
+    s->seen_AS_since_last_V = 1;
+    s_AEI_grace = 0;               /* any pending AEI grace is cancelled */
+  }
+
+  /* ---- AEI behaviour (Triggered + grace inhibit) ---- */
+  if(s->AEI==0 && s->seen_AS_since_last_V==0){
+    /* Start/continue grace window. First tick after AEI==0 starts it. */
+    if(s_AEI_grace==0) s_AEI_grace = AEI_GRACE_MS;
+  }
+  if(s->AEI==0 && s_AEI_grace==0 && s->seen_AS_since_last_V==0){
+    /* No AS during grace → atrial pace */
+    s->AP = 1; s->AP_fired = 1; s->AP_led_ms = s->led_pulse_ms;
+    s->AVI = AVI_VALUE;            /* AP is an atrial event */
+    s->seen_AS_since_last_V = 1;
+  }
+
+  /* ---- Ventricular decision (DDD with URI) ---- */
+  const int avi_requests_vp = (s->AVI==0 && s->seen_AS_since_last_V);
+  const int lri_requests_vp = (s->LRI==0 && s->seen_AS_since_last_V==0);
+
+  /* AVI path (Triggered); URI may extend it */
+  if(avi_requests_vp){
+    if(s->URI==0){
+      post_ventricular(s, /*paced=*/1);
+    }else{
+      s->vp_waiting_for_URI = 1;    /* defer exactly one VP */
+    }
+  }
+
+  /* LRI path (Inhibited); never deferred by URI and suppressed if A-tracking */
+  if(lri_requests_vp && s->URI==0){
+    post_ventricular(s, /*paced=*/1);
+  }
+
+  /* Deliver deferred AVI VP at URI end (unless a VS already occurred) */
+  if(s->vp_waiting_for_URI && s->URI==0){
+    post_ventricular(s, /*paced=*/1);
+  }
+
+  /* Clear raw senses (1-ms pulses) */
+  s->AS_raw = 0; s->VS_raw = 0;
+}
+
+/* ===== public stepping API ============================================== */
+void PMc_run_for_elapsed_ms(PacemakerC* s){
+  while(s_ms_ticks){ PMc_tick_1ms(s); s_ms_ticks--; }
+}
+
+void PMc_poll_and_clear_pulses(PacemakerC* s, int* AP_any, int* VP_any){
+  if(AP_any) *AP_any = s->AP_fired;
+  if(VP_any) *VP_any = s->VP_fired;
+  s->AP_fired = 0; s->VP_fired = 0;
+}
+
+int PMc_led_AP_on(const PacemakerC* s){ return s->AP_led_ms>0; }
+int PMc_led_VP_on(const PacemakerC* s){ return s->VP_led_ms>0; }

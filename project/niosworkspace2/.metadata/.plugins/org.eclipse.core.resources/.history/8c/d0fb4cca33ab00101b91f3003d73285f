@@ -1,0 +1,43 @@
+#include "Pacemaker_C.h"
+#include <string.h>
+
+static inline void dec_if_pos(int* t) { if (*t > 0) (*t)--; }
+
+void PMc_init(PacemakerC* s) {
+  if (!s) return;
+  memset(s, 0, sizeof(*s));
+  s->led_pulse_ms = 0;
+  /* default to normal state unless changed by PMc_config */
+  s->cfg_sa_on   = 1;
+  s->cfg_av_on   = 1;
+  s->cfg_cond_on = 1;
+}
+
+void PMc_set_led_pulse_ms(PacemakerC* s, int ms) {
+  if (!s) return;
+  s->led_pulse_ms = (ms > 0 ? ms : 0);
+}
+
+void PMc_config(PacemakerC* s, int sa_on, int av_on, int cond_on) {
+  if (!s) return;
+  s->cfg_sa_on   = !!sa_on;
+  s->cfg_av_on   = !!av_on;
+  s->cfg_cond_on = !!cond_on;
+}
+
+int PMc_start_1ms_alarm(void) { return 0; }
+
+void PMc_set_senses(PacemakerC* s, int AS_raw, int VS_raw) {
+  if (!s) return;
+  s->AS_raw = AS_raw ? 1 : 0;
+  s->VS_raw = VS_raw ? 1 : 0;
+}
+
+static void PMc_tick_case2(PacemakerC* s) {
+  /* Case 2: SA=1, AV=1, COND=0 (restore AV synchrony with AVI->VP) */
+  s->AP = 0; s->VP = 0;
+
+  dec_if_pos(&s->AVI); dec_if_pos(&s->AEI);
+  dec_if_pos(&s->PVARP); dec_if_pos(&s->VRP);
+  dec_if_pos(&s->LRI); dec_if_pos(&s->URI);
+  dec_if_pos(&s->AP
