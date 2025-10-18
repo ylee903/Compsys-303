@@ -4,7 +4,7 @@
 #include <altera_avalon_pio_regs.h>
 
 #include "Pacemaker.h"
-#include "Pacemaker.h"
+#include "sccharts.h"
 #include "uart.h"
 #include "timing.h"
 

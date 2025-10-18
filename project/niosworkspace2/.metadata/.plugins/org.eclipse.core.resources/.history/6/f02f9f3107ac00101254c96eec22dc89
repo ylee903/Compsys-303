@@ -1,0 +1,67 @@
+#include <string.h>
+#include <stdio.h>
+#include <sys/alt_alarm.h>
+#include <sys/alt_irq.h>
+#include <altera_avalon_pio_regs.h>
+#include <system.h>
+
+#include "Pacemaker_C.h"
+
+/* ==================== Module-local state ==================== */
+static PacemakerC* s_pm_ptr = NULL;
+static alt_alarm    s_tick_alarm;
+
+/* ==================== Helpers ==================== */
+static inline int just_expired(int before, int after){ return (before > 0) && (after == 0); }
+
+static void handle_atrial_event(PacemakerC* s, int paced){
+  (void)paced;
+  /* AEI disarms on any atrial event (AS or AP) */
+  s->AEI = 0;
+
+  /* If PVARP is FALSE, (AS or AP) → arm AVI */
+  if (s->PVARP == 0){
+    s->AVI = AVI_VALUE;
+  }
+}
+
+static void handle_ventricular_event(PacemakerC* s, int paced){
+  (void)paced;
+
+  /* Any V-event cancels a pending fake VP */
+  s->vp_waiting_for_URI = 0;
+
+  /* After a V-event, arm/reset: AEI, VRP, LRI, URI, and PVARP */
+  s->AEI   = AEI_VALUE;
+  s->VRP   = VRP_VALUE;
+  s->LRI   = LRI_VALUE;
+  s->URI   = URI_VALUE;
+  s->PVARP = PVARP_VALUE;
+}
+
+/* Schedule "fake VP": will actually pace when URI==0 unless a VS/VP happens first */
+static void schedule_fake_VP(PacemakerC* s){
+  s->vp_waiting_for_URI = 1;
+}
+
+/* Actually fire a VP (one-shot) */
+static void fire_VP(PacemakerC* s){
+  s->VP_fired  = 1;
+  s->VP_led_ms = s->led_pulse_ms;
+  handle_ventricular_event(s, /*paced=*/1);
+}
+
+/* Actually fire an AP (one-shot) */
+static void fire_AP(PacemakerC* s){
+  s->AP_fired  = 1;
+  s->AP_led_ms = s->led_pulse_ms;
+  handle_atrial_event(s, /*paced=*/1);
+}
+
+/* ==================== 1 ms TICK ISR ==================== */
+static alt_u32 PMc_tick_isr(void* context) {
+  PacemakerC* s = (PacemakerC*)context;
+  if (!s) return 1;
+
+  /* -------- LED stretch -------- */
+  if (s->AP_led_
