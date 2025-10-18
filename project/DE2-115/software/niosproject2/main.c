@@ -1,8 +1,9 @@
 /*
  * main.c — COMPSYS 303 Pacemaker (SCCharts + C-mode)
- *
- * LED freeze fix: switch LED timing from absolute timestamps to
- * countdown counters updated by elapsed ms → robust to timer wrap.
+ * - Heartbeat prints numbered uptime: [HB] t=<ms>ms
+ * - LED stretch uses countdowns (no absolute deadline bugs)
+ * - Buttons fire only on PRESS (active-low)
+ * - C-mode LEDG7 debug blinker (1s period, configurable)
  */
 
 #include <stdio.h>
@@ -24,23 +25,32 @@
 #endif
 
 #define HEARTBEAT_MS   1000
-#define LED_STRETCH_MS 150   // visible duration for AP/VP paces (ms)
-#define LED_INPUT_MS   60    // short input blip for manual senses (ms)
+#define LED_STRETCH_MS 150   // AP/VP visibility
+#define LED_INPUT_MS   60    // manual AS/VS blip
 
+#ifndef LEDG7_MASK
+  #define LEDG7_MASK (1u << 7)  // adjust if LEDG7 is a different bit
+#endif
+
+// ===== SCCharts =====
 static TickData g_pm;
-static int      g_uart_fd   = -1;
-static alt_u32  g_last_tick = 0;
-static alt_u32  g_last_hb_ms= 0;
-static alt_u32  g_prev_keys = 0xFFFFFFFF;
 
+// ===== Shared HW state =====
+static int      g_uart_fd   = -1;
+static alt_u32  g_prev_keys = 0xFFFFFFFF; // for button press edge
+
+// ===== C-mode =====
 static PacemakerC g_c;
 static int        g_c_inited = 0;
 
-// LED stretch state — now countdowns (ms), not absolute times
-static int ap_led_ms = 0; // AP pace LED
-static int vp_led_ms = 0; // VP pace LED
-static int as_led_ms = 0; // manual AS input blip
-static int vs_led_ms = 0; // manual VS input blip
+// ===== LED stretch countdowns (ms) =====
+static int ap_led_ms = 0; // pace AP
+static int vp_led_ms = 0; // pace VP
+static int as_led_ms = 0; // input AS
+static int vs_led_ms = 0; // input VS
+
+// ===== Uptime / heartbeat =====
+static alt_u32 g_uptime_ms = 0;
 
 static inline alt_u32 ms_now(void){
   alt_u64 t = alt_timestamp();
@@ -48,19 +58,19 @@ static inline alt_u32 ms_now(void){
   return (alt_u32)((t * 1000ULL) / (f ? f : 1));
 }
 
-static void leds_show_mode(alt_u32 sw){
+static inline void leds_show_mode(alt_u32 sw){
   IOWR_ALTERA_AVALON_PIO_DATA(LEDS_RED_BASE, (sw & 0x03));
 }
 
-// Update LED GPIO based on countdowns (>0 → ON)
-static inline void leds_apply_from_counters(void){
+// green LEDs: LEDG1=AP, LEDG0=VP, optional LEDG7 debug bit
+static inline void leds_apply_from_counters_with_dbg7(int dbg7){
   alt_u32 g = 0;
   if (ap_led_ms > 0 || as_led_ms > 0) g |= 0x02; // LEDG1
   if (vp_led_ms > 0 || vs_led_ms > 0) g |= 0x01; // LEDG0
+  if (dbg7)                           g |= LEDG7_MASK;
   IOWR_ALTERA_AVALON_PIO_DATA(LEDS_GREEN_BASE, g);
 }
 
-// Decrement all LED counters by elapsed_ms (clamp at 0)
 static inline void leds_decay(int elapsed_ms){
   if (elapsed_ms <= 0) return;
   if (ap_led_ms > 0) { ap_led_ms -= elapsed_ms; if (ap_led_ms < 0) ap_led_ms = 0; }
@@ -69,22 +79,22 @@ static inline void leds_decay(int elapsed_ms){
   if (vs_led_ms > 0) { vs_led_ms -= elapsed_ms; if (vs_led_ms < 0) vs_led_ms = 0; }
 }
 
-// Trigger only when button goes from unpressed (1) → pressed (0)
-static void main_read_buttons_on_press(int *AS_btn, int *VS_btn) {
+// PRESS-only (unpressed->pressed) on KEY1/KEY0 (active-low)
+static void main_read_buttons_on_press(int *AS_btn, int *VS_btn){
   *AS_btn = 0; *VS_btn = 0;
   alt_u32 keys = IORD_ALTERA_AVALON_PIO_DATA(KEYS_BASE);
   if (((g_prev_keys & 0x02) != 0) && ((keys & 0x02) == 0)) {
-    *AS_btn = 1; as_led_ms = LED_INPUT_MS; // blip input LED
+    *AS_btn = 1; as_led_ms = LED_INPUT_MS;
     printf("[MAIN][BTN] AS PRESS @ %ums\n", ms_now());
   }
   if (((g_prev_keys & 0x01) != 0) && ((keys & 0x01) == 0)) {
-    *VS_btn = 1; vs_led_ms = LED_INPUT_MS; // blip input LED
+    *VS_btn = 1; vs_led_ms = LED_INPUT_MS;
     printf("[MAIN][BTN] VS PRESS @ %ums\n", ms_now());
   }
   g_prev_keys = keys;
 }
 
-static void main_poll_uart_senses(int *AS_uart, int *VS_uart) {
+static void main_poll_uart_senses(int *AS_uart, int *VS_uart){
   *AS_uart = 0; *VS_uart = 0;
   if (g_uart_fd < 0) return;
   char ch; int n;
@@ -94,36 +104,38 @@ static void main_poll_uart_senses(int *AS_uart, int *VS_uart) {
   }
 }
 
-static void uart_send_probe(void){
+static inline void uart_send_probe(void){
   if (g_uart_fd >= 0) {
     const char *probe = "HELLO_FROM_BOARD\r\n";
     (void)write(g_uart_fd, probe, (int)strlen(probe));
   }
 }
 
-static void uart_send_pace_bytes_if_enabled(int uart_enabled, int AP, int VP){
+static inline void uart_send_pace_bytes_if_enabled(int uart_enabled, int AP, int VP){
   if (!uart_enabled || g_uart_fd < 0) return;
   if (AP) { const char A = 'A'; (void)write(g_uart_fd, &A, 1); }
   if (VP) { const char V = 'V'; (void)write(g_uart_fd, &V, 1); }
 }
 
-static void heartbeat_stdout(void){
-  static alt_u32 hb_accum = 0; // use elapsed for HB too, to survive wraps
-  alt_u32 now_ticks = alt_timestamp();
-  alt_u32 elapsed   = now_ticks - g_last_tick; // used only for HB pace
-  g_last_tick       = now_ticks;
-  alt_u32 f = alt_timestamp_freq();
-  alt_u32 elapsed_ms = (alt_u32)((elapsed * 1000ULL) / (f ? f : 1));
-  hb_accum += elapsed_ms;
-  if (hb_accum >= HEARTBEAT_MS){ hb_accum -= HEARTBEAT_MS; printf("[HB]\n"); fflush(stdout);}
+static inline void heartbeat_stdout_numbered(int elapsed_ms){
+  static int hb_accum = 0;
+  if (elapsed_ms < 0) elapsed_ms = 0;
+  g_uptime_ms += (alt_u32)elapsed_ms;
+  hb_accum    += elapsed_ms;
+  if (hb_accum >= HEARTBEAT_MS){
+    hb_accum -= HEARTBEAT_MS;
+    printf("[HB] t=%ums\n", g_uptime_ms);
+    fflush(stdout);
+  }
 }
 
 int main(void){
   reset(&g_pm);
 
-  if (alt_timestamp_start() < 0){ printf("[ERR] alt_timestamp_start failed\n"); }
-  g_last_tick  = alt_timestamp();
-  g_prev_keys  = IORD_ALTERA_AVALON_PIO_DATA(KEYS_BASE);
+  if (alt_timestamp_start() < 0){
+    printf("[ERR] alt_timestamp_start failed\n");
+  }
+  g_prev_keys = IORD_ALTERA_AVALON_PIO_DATA(KEYS_BASE);
 
   printf("\n==== COMPSYS303 Pacemaker (SCCharts + C-mode) ====\n");
   printf("UART dev: %s (115200 8N1)\n", UART_NAME);
@@ -141,26 +153,26 @@ int main(void){
   }
   fflush(stdout);
 
-  // Separate timebase for application logic (so HB change above doesn't affect deltaT)
   alt_u32 last_ticks_logic = alt_timestamp();
 
   while (1){
-    // Compute elapsed_ms once per loop; use for both modes and LED decay
+    // elapsed ms (single timebase)
     alt_u32 now_ticks = alt_timestamp();
     alt_u32 elapsed_ticks = now_ticks - last_ticks_logic;
     last_ticks_logic = now_ticks;
     alt_u32 f = alt_timestamp_freq();
     int elapsed_ms = (int)((elapsed_ticks * 1000ULL) / (f ? f : 1));
-    if (elapsed_ms <= 0) elapsed_ms = 1; // be conservative
+    if (elapsed_ms <= 0) elapsed_ms = 1;
 
     alt_u32 sw = IORD_ALTERA_AVALON_PIO_DATA(SWITCHES_BASE);
     leds_show_mode(sw);
 
-    int sccharts_mode = ((sw & 0x01) == 0);
-    int uart_source   = ((sw & 0x02) != 0);
+    const int sccharts_mode = ((sw & 0x01) == 0);
+    const int uart_source   = ((sw & 0x02) != 0);
+    int dbg7 = 0;
 
     if (sccharts_mode){
-      // SCCharts deltaT in ms from elapsed_ms
+      // ===== SCCharts path =====
       g_pm.deltaT = (double)elapsed_ms;
 
       int AS_btn=0, VS_btn=0, AS_uart=0, VS_uart=0;
@@ -171,7 +183,6 @@ int main(void){
 
       tick(&g_pm);
 
-      // On paces, start pace LED counters
       if (g_pm.AP) ap_led_ms = LED_STRETCH_MS;
       if (g_pm.VP) vp_led_ms = LED_STRETCH_MS;
 
@@ -179,10 +190,12 @@ int main(void){
       g_pm.AS = 0; g_pm.VS = 0;
 
     } else {
+      // ===== C-mode path =====
       if (!g_c_inited){
         PMc_init(&g_c);
-        PMc_set_led_pulse_ms(&g_c, 25);
+        PMc_set_led_pulse_ms(&g_c, 25);        // placeholder
         if (PMc_start_1ms_alarm() < 0) printf("[ERR] 1ms alarm start failed\n");
+        PMc_debug_set_blink_period_ms(&g_c, 1000); // LEDG7 period
         g_c_inited = 1;
       }
 
@@ -195,9 +208,11 @@ int main(void){
       PMc_set_senses(&g_c, AS_raw, VS_raw);
       PMc_run_for_elapsed_ms(&g_c);
 
+      PMc_debug_tick_elapsed_ms(&g_c, elapsed_ms);
+      dbg7 = PMc_debug_led7(&g_c);
+
       int ap_any=0, vp_any=0;
       PMc_poll_and_clear_pulses(&g_c, &ap_any, &vp_any);
-
       if (ap_any) ap_led_ms = LED_STRETCH_MS;
       if (vp_any) vp_led_ms = LED_STRETCH_MS;
 
@@ -207,14 +222,10 @@ int main(void){
       }
     }
 
-    // Decay and apply LEDs based on counters
+    // LEDs & heartbeat
     leds_decay(elapsed_ms);
-    leds_apply_from_counters();
-
-    // Heartbeat based on decayed timebase
-    static int hb_accum_ms = 0;
-    hb_accum_ms += elapsed_ms;
-    if (hb_accum_ms >= HEARTBEAT_MS){ hb_accum_ms -= HEARTBEAT_MS; printf("[HB]\n"); fflush(stdout);}
+    leds_apply_from_counters_with_dbg7(dbg7);
+    heartbeat_stdout_numbered(elapsed_ms);
   }
 
   return 0;
