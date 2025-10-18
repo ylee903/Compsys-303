@@ -1,11 +1,7 @@
-/*
- * main.c — COMPSYS 303 Pacemaker (SCCharts) with button self‑test prints
- *
- * Adds: in **Buttons mode** (SW1=0), print to Nios II Console whenever
- *       KEY1 (AS) or KEY0 (VS) is **pressed** (edge‑detected, active‑low).
- *       This is only a debug aid; UART behaviour is unchanged and prints
- *       still go to JTAG UART (STDOUT=/dev/jtag_uart).
- */
+/* Patch for your existing main.c to wire in the C-mode (Pacemaker_C)
+   Behavior: VS/VP event → AEI countdown → AP one-tick pulse (from Pacemaker_C.c)
+   Usage: SW0=1 selects C-mode; SW1 selects input source (0=Buttons, 1=UART)
+*/
 
 #include <stdio.h>
 #include <string.h>
@@ -20,6 +16,9 @@
 #include <fcntl.h>
 #include <unistd.h>
 
+/* ▼ NEW: include C-mode API */
+#include "Pacemaker_C.h"
+
 #ifndef UART_NAME
   #define UART_NAME "/dev/uart"
 #endif
@@ -31,6 +30,9 @@ static int      g_uart_fd = -1;
 static alt_u32  g_last_tick = 0;
 static alt_u32  g_last_hb_ms = 0;
 static alt_u32  g_prev_keys = 0xFFFFFFFF; // init to all 1s (no press)
+
+/* ▼ NEW: track ms for C-mode stepping */
+static int g_c_last_ms = -1;
 
 static inline alt_u32 ms_now(void){
   alt_u64 t = alt_timestamp();
@@ -49,23 +51,14 @@ static void leds_show_pace(int AP, int VP){
   IOWR_ALTERA_AVALON_PIO_DATA(LEDS_GREEN_BASE, g);
 }
 
-// Buttons path: active‑low, **edge‑detect presses** to avoid printing repeatedly
+// Buttons path: active‑low, edge‑detect presses
 static void handle_buttons_inputs_with_debug(void){
   alt_u32 keys = IORD_ALTERA_AVALON_PIO_DATA(KEYS_BASE);
-  // Press detected on KEY1 (AS) = prev high -> now low
   int as_pressed =  ((g_prev_keys & 0x02) != 0) && ((keys & 0x02) == 0);
   int vs_pressed =  ((g_prev_keys & 0x01) != 0) && ((keys & 0x01) == 0);
-
-  if (as_pressed){
-    g_pm.AS = 1; // one‑tick pulse
-    printf("[BTN] AS pressed (KEY1) @ %ums\n", ms_now());
-  }
-  if (vs_pressed){
-    g_pm.VS = 1; // one‑tick pulse
-    printf("[BTN] VS pressed (KEY0) @ %ums\n", ms_now());
-  }
-
-  g_prev_keys = keys; // remember for next edge detect
+  if (as_pressed){ g_pm.AS = 1; printf("[BTN] AS pressed (KEY1) @ %ums\n", ms_now()); }
+  if (vs_pressed){ g_pm.VS = 1; printf("[BTN] VS pressed (KEY0) @ %ums\n", ms_now()); }
+  g_prev_keys = keys;
 }
 
 static void handle_uart_inputs(void){
@@ -106,9 +99,13 @@ int main(void){
   }
   g_last_tick = alt_timestamp();
   g_last_hb_ms = 0;
-  g_prev_keys = IORD_ALTERA_AVALON_PIO_DATA(KEYS_BASE); // seed edge detector
+  g_prev_keys = IORD_ALTERA_AVALON_PIO_DATA(KEYS_BASE);
 
-  printf("\n==== COMPSYS303 Pacemaker (SCCharts) ====.\n");
+  /* ▼ NEW: init C-mode engine */
+  PMc_init();
+  g_c_last_ms = ms_now();
+
+  printf("\n==== COMPSYS303 Pacemaker (SCCharts + C-mode) ====\n");
   printf("UART dev: %s (115200 8N1)\n", UART_NAME);
   printf("Timings: AVI=%d AEI=%d PVARP=%d VRP=%d LRI=%d URI=%d (ms)\n",
          AVI_VALUE, AEI_VALUE, PVARP_VALUE, VRP_VALUE, LRI_VALUE, URI_VALUE);
@@ -137,11 +134,7 @@ int main(void){
     g_pm.deltaT = (double)elapsed * 1000.0 / (double)alt_timestamp_freq();
 
     if (sccharts_mode){
-      if (uart_source) {
-        handle_uart_inputs();
-      } else {
-        handle_buttons_inputs_with_debug(); // <— prints on KEY presses
-      }
+      if (uart_source) { handle_uart_inputs(); } else { handle_buttons_inputs_with_debug(); }
 
       tick(&g_pm);
       leds_show_pace(g_pm.AP, g_pm.VP);
@@ -150,7 +143,30 @@ int main(void){
       g_pm.AS = 0;
       g_pm.VS = 0;
     } else {
-      leds_show_pace(0,0); // C impl later
+      /* ▼ C-mode path using Pacemaker_C */
+      if (uart_source) { handle_uart_inputs(); } else { handle_buttons_inputs_with_debug(); }
+
+      int as = g_pm.AS; // 1-tick pulses captured by input handlers
+      int vs = g_pm.VS;
+      g_pm.AS = g_pm.VS = 0; // consumed
+
+      PMc_set_senses(as, vs);
+
+      int now_ms = (int)ms_now();
+      int elapsed_ms = (g_c_last_ms < 0) ? 1 : (now_ms - g_c_last_ms);
+      if (elapsed_ms < 0) elapsed_ms = 0;           // guard wrap
+      if (elapsed_ms > 20) elapsed_ms = 20;         // clamp to keep loop responsive
+      g_c_last_ms = now_ms;
+
+      PMc_run_for_elapsed_ms(elapsed_ms);
+
+      int AP=0, VP=0;
+      PMc_poll_and_clear_pulses(&AP, &VP);
+
+      leds_show_pace(AP, VP);
+      uart_send_pace_bytes_if_enabled(uart_source, AP, VP);
+
+      if (AP) printf("[C ] AP fired after AEI=%dms (VS/VP earlier)\n", AEI_VALUE);
     }
 
     heartbeat_stdout();

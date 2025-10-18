@@ -14,7 +14,7 @@ obj/default/main.o: main.c ../niosproject2_bsp/system.h \
  ../niosproject2_bsp//HAL/inc/sys/alt_warning.h \
  ../niosproject2_bsp//HAL/inc/sys/alt_alarm.h \
  ../niosproject2_bsp//HAL/inc/sys/alt_llist.h \
- ../niosproject2_bsp//HAL/inc/priv/alt_alarm.h
+ ../niosproject2_bsp//HAL/inc/priv/alt_alarm.h Pacemaker_C.h
 
 ../niosproject2_bsp/system.h:
 
@@ -53,3 +53,5 @@ timing.h:
 ../niosproject2_bsp//HAL/inc/sys/alt_llist.h:
 
 ../niosproject2_bsp//HAL/inc/priv/alt_alarm.h:
+
+Pacemaker_C.h:

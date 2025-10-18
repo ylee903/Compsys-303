@@ -1,0 +1,61 @@
+/*
+ * Pacemaker_C.c — debug-only timer
+ * -------------------------------------------------
+ * Uses the global 1 ms increment to trigger AP
+ * every 400 ms.  No sensing, no pacing logic.
+ */
+
+#include <stdio.h>
+#include <stdint.h>
+#include "Pacemaker_C.h"
+#include "timing.h"   // optional, but harmless
+
+/* -------------------------------------------------
+   Module-local state
+   ------------------------------------------------- */
+static int s_ms_counter = 0;
+static int s_AP_pulse    = 0;
+
+/* -------------------------------------------------
+   API stubs expected by main.c
+   ------------------------------------------------- */
+int PMc_init(void) {
+    s_ms_counter = 0;
+    s_AP_pulse   = 0;
+    return 0;
+}
+
+int PMc_start_1ms_alarm(void) {
+    // no hardware timer; main drives time manually
+    return 0;
+}
+
+void PMc_set_senses(int AS_pulse, int VS_pulse) {
+    (void)AS_pulse;
+    (void)VS_pulse;
+}
+
+/* -------------------------------------------------
+   Run for N milliseconds (called each loop)
+   ------------------------------------------------- */
+void PMc_run_for_elapsed_ms(int elapsed_ms) {
+    if (elapsed_ms <= 0) return;
+
+    for (int i = 0; i < elapsed_ms; ++i) {
+        s_ms_counter++;
+
+        if (s_ms_counter >= 400) {
+            s_ms_counter = 0;
+            s_AP_pulse   = 1;   /* one-tick pulse */
+        }
+    }
+}
+
+/* -------------------------------------------------
+   Poll outputs and clear one-shots
+   ------------------------------------------------- */
+void PMc_poll_and_clear_pulses(int *AP_pulse, int *VP_pulse) {
+    if (AP_pulse) *AP_pulse = s_AP_pulse;
+    if (VP_pulse) *VP_pulse = 0;
+    s_AP_pulse = 0;
+}
