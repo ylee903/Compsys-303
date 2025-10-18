@@ -42,6 +42,8 @@ typedef struct {
 /* ---- Lifecycle ---- */
 void PMc_init(PacemakerC* s);
 void PMc_set_led_pulse_ms(PacemakerC* s, int ms);
+int PMc_enable_interrupts(PacemakerC* s);
+int PMc_enable_interrupts(PacemakerC* s);
 
 /* ---- 1 ms timing ---- */
 /* Start a 1ms alarm that increments an internal tick counter (module-local ISR) */

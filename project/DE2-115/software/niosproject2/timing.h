@@ -8,9 +8,9 @@
 
 // timing.h — all times in milliseconds
 #define AVI_VALUE 300
-#define AEI_VALUE 1000
+#define AEI_VALUE 500
 #define PVARP_VALUE 50
 #define VRP_VALUE 150
-#define LRI_VALUE 3000
-#define URI_VALUE 0
+#define LRI_VALUE 950
+#define URI_VALUE 900
 

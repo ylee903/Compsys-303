@@ -1,0 +1,115 @@
+#include <string.h>
+#include <stdio.h>
+#include <sys/alt_alarm.h>
+#include <sys/alt_irq.h>
+#include <altera_avalon_pio_regs.h>
+#include "Pacemaker_C.h"
+#include <system.h>
+
+/* Module-local state */
+static PacemakerC* s_pm_ptr = NULL;
+static alt_alarm s_tick_alarm;
+
+/* Interrupt flags */
+static volatile int s_VS_event = 0;
+
+/* ==================== INTERRUPT SERVICE ROUTINES ==================== */
+
+/* 1ms tick ISR - minimal timer */
+static alt_u32 PMc_tick_isr(void* context) {
+  PacemakerC* s = (PacemakerC*)context;
+  if (!s) return 1;
+
+  /* Decrement LED timer only */
+  if (s->AP_led_ms > 0) s->AP_led_ms--;
+
+  return 1; /* Re-schedule in 1ms */
+}
+
+/* Ventricular Sense ISR - triggers AP immediately */
+#ifdef VENTRICULAR_SENSE_BASE
+static void PMc_VS_isr(void* context) {
+  (void)context;
+
+  /* Clear the interrupt */
+  IOWR_ALTERA_AVALON_PIO_EDGE_CAP(VENTRICULAR_SENSE_BASE, 0x1);
+
+  /* Trigger AP immediately */
+  if (s_pm_ptr) {
+    s_pm_ptr->VS = 1;
+    s_pm_ptr->AP = 1;
+    s_pm_ptr->AP_fired = 1;
+    s_pm_ptr->AP_led_ms = s_pm_ptr->led_pulse_ms;
+  }
+}
+#endif
+
+/* ==================== INITIALIZATION ==================== */
+
+void PMc_init(PacemakerC* s) {
+  memset(s, 0, sizeof(*s));
+  s->led_pulse_ms = 25;
+}
+
+int PMc_start_1ms_alarm(void) {
+  return 0; /* Deprecated */
+}
+
+int PMc_start_1ms_alarm_with_state(PacemakerC* s) {
+  int status = 0;
+
+  if (!s) return -1;
+
+  s_pm_ptr = s;
+
+  /* Register 1ms tick interrupt */
+  status = alt_alarm_start(&s_tick_alarm, 1, PMc_tick_isr, s);
+  if (status != 0) {
+    printf("[STUB] ERROR: Failed to start tick timer\n");
+    return status;
+  }
+
+  /* Configure Ventricular Sense interrupt */
+#ifdef VENTRICULAR_SENSE_BASE
+  IOWR_ALTERA_AVALON_PIO_IRQ_MASK(VENTRICULAR_SENSE_BASE, 0x1);
+  IOWR_ALTERA_AVALON_PIO_EDGE_CAP(VENTRICULAR_SENSE_BASE, 0x1);
+
+  status = alt_ic_isr_register(
+    VENTRICULAR_SENSE_IRQ_INTERRUPT_CONTROLLER_ID,
+    VENTRICULAR_SENSE_IRQ,
+    PMc_VS_isr,
+    NULL,
+    NULL
+  );
+
+  if (status != 0) {
+    printf("[STUB] ERROR: Failed to register VS interrupt\n");
+    return status;
+  }
+#endif
+
+  printf("[STUB] Simple VS/VP->AP trigger initialized\n");
+  fflush(stdout);
+
+  return 0;
+}
+
+/* ==================== MAIN LOOP ==================== */
+
+void PMc_step(PacemakerC* s) {
+  /* Check if VP was triggered externally - also triggers AP */
+  if (s->VP) {
+    s->AP = 1;
+    s->AP_fired = 1;
+    s->AP_led_ms = s->led_pulse_ms;
+    s->VP = 0;
+  }
+
+  /* Clear flags after processing */
+  if (s->AP_led_ms == 0) {
+    s->AP = 0;
+    s->AP_fired = 0;
+  }
+
+  s->VS = 0;
+}

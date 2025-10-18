@@ -1,0 +1,175 @@
+#include <string.h>
+#include <stdio.h>
+#include <sys/alt_alarm.h>
+#include <sys/alt_irq.h>
+#include <altera_avalon_pio_regs.h>
+#include "Pacemaker_C.h"
+#include <system.h>
+
+/* Module-local state */
+static PacemakerC* s_pm_ptr = NULL;
+static alt_alarm s_tick_alarm;
+
+/* Interrupt flags */
+static volatile int s_VS_event = 0;
+
+/* ==================== INTERRUPT SERVICE ROUTINES ==================== */
+
+/* 1ms tick ISR - handles AEI countdown and triggers AP */
+static alt_u32 PMc_tick_isr(void* context) {
+  PacemakerC* s = (PacemakerC*)context;
+  if (!s) return 1;
+
+  /* Decrement LED timers */
+  if (s->AP_led_ms > 0) s->AP_led_ms--;
+  if (s->VP_led_ms > 0) s->VP_led_ms--;
+
+  /* Decrement AEI timer */
+  if (s->AEI > 0) {
+    s->AEI--;
+
+    /* When AEI expires, trigger AP */
+    if (s->AEI == 0) {
+      s->AP = 1;
+      s->AP_fired = 1;
+      s->AP_led_ms = s->led_pulse_ms;
+
+      /* Restart AEI for next cycle */
+      s->AEI = AEI_VALUE;
+    }
+  }
+
+  return 1; /* Re-schedule in 1ms */
+}
+
+/* Ventricular Sense ISR - resets AEI timer */
+#ifdef VENTRICULAR_SENSE_BASE
+static void PMc_VS_isr(void* context) {
+  (void)context;
+
+  /* Clear the interrupt */
+  IOWR_ALTERA_AVALON_PIO_EDGE_CAP(VENTRICULAR_SENSE_BASE, 0x1);
+
+  /* VS detected - restart AEI countdown */
+  if (s_pm_ptr) {
+    s_pm_ptr->VS = 1;
+    s_pm_ptr->AEI = AEI_VALUE;  /* Reset AEI timer */
+  }
+}
+#endif
+
+/* ==================== INITIALIZATION ==================== */
+
+void PMc_init(PacemakerC* s) {
+  memset(s, 0, sizeof(*s));
+  s->led_pulse_ms = 25;
+  s->AEI = AEI_VALUE;  /* Start AEI countdown immediately */
+}
+
+int PMc_start_1ms_alarm(void) {
+  return 0; /* Deprecated */
+}
+
+int PMc_start_1ms_alarm_with_state(PacemakerC* s) {
+  int status = 0;
+
+  if (!s) return -1;
+
+  s_pm_ptr = s;
+
+  /* Register 1ms tick interrupt */
+  status = alt_alarm_start(&s_tick_alarm, 1, PMc_tick_isr, s);
+  if (status != 0) {
+    printf("[STUB] ERROR: Failed to start tick timer\n");
+    return status;
+  }
+
+  /* Configure Ventricular Sense interrupt */
+#ifdef VENTRICULAR_SENSE_BASE
+  IOWR_ALTERA_AVALON_PIO_IRQ_MASK(VENTRICULAR_SENSE_BASE, 0x1);
+  IOWR_ALTERA_AVALON_PIO_EDGE_CAP(VENTRICULAR_SENSE_BASE, 0x1);
+
+  status = alt_ic_isr_register(
+    VENTRICULAR_SENSE_IRQ_INTERRUPT_CONTROLLER_ID,
+    VENTRICULAR_SENSE_IRQ,
+    PMc_VS_isr,
+    NULL,
+    NULL
+  );
+
+  if (status != 0) {
+    printf("[STUB] ERROR: Failed to register VS interrupt\n");
+    return status;
+  }
+#endif
+
+  printf("[STUB] AEI-based pacemaker initialized (AEI=%d ms)\n", AEI_VALUE);
+  fflush(stdout);
+
+  return 0;
+}
+
+/* ==================== HELPER FUNCTIONS (STUBS) ==================== */
+
+void PMc_enable_interrupts(void) {
+  /* Stub - interrupts already enabled in PMc_start_1ms_alarm_with_state */
+}
+
+void PMc_set_led_pulse_ms(PacemakerC* s, int ms) {
+  if (s) s->led_pulse_ms = ms;
+}
+
+void PMc_set_senses(PacemakerC* s, int AS_val, int VS_val) {
+  if (!s) return;
+  s->AS = AS_val;
+  s->VS = VS_val;
+
+  /* VS resets AEI timer */
+  if (VS_val) {
+    s->AEI = AEI_VALUE;
+  }
+}
+
+void PMc_run_for_elapsed_ms(PacemakerC* s) {
+  /* Stub - timing handled by interrupts */
+  (void)s;
+}
+
+void PMc_poll_and_clear_pulses(PacemakerC* s, int* out_AP, int* out_VP) {
+  if (!s) return;
+
+  if (out_AP) *out_AP = s->AP_fired;
+  if (out_VP) *out_VP = s->VP_fired;
+
+  /* Clear after reading */
+  s->AP_fired = 0;
+  s->VP_fired = 0;
+}
+
+int PMc_led_AP_on(const PacemakerC* s) {
+  return (s && s->AP_led_ms > 0) ? 1 : 0;
+}
+
+int PMc_led_VP_on(const PacemakerC* s) {
+  return (s && s->VP_led_ms > 0) ? 1 : 0;
+}
+
+/* ==================== MAIN LOOP ==================== */
+
+void PMc_step(PacemakerC* s) {
+  /* Check if VP was triggered externally - resets AEI */
+  if (s->VP) {
+    s->VP_fired = 1;
+    s->VP_led_ms = s->led_pulse_ms;
+    s->AEI = AEI_VALUE;  /* Reset AEI timer */
+    s->VP = 0;
+  }
+
+  /* Clear flags after LED timer expires */
+  if (s->AP_led_ms == 0) {
+    s->AP = 0;
+  }
+
+  s->VS = 0;
+  s->AS = 0;
+}
