@@ -1,133 +1,342 @@
 #include <string.h>
 #include <stdio.h>
 #include <sys/alt_alarm.h>
+#include <sys/alt_irq.h>
 #include <altera_avalon_pio_regs.h>
+#include <altera_avalon_timer_regs.h>
 #include "Pacemaker_C.h"
 #include <system.h>
 
-/* Module-local 1ms ticker */
-static volatile alt_u32 s_ms_ticks = 0;
-static alt_alarm s_alarm;
-static int s_banner_printed = 0;
+/* Module-local state */
+static volatile int s_banner_printed = 0;
+static PacemakerC* s_pm_ptr = NULL; /* Pointer to user's state */
 
-static alt_u32 PMc_alarm_cb(void* ctx) {
-  (void)ctx;
-  s_ms_ticks++;
-  return 1; /* schedule next callback in 1 ms */
+/* Timer interrupt structures */
+static alt_alarm s_tick_alarm;
+
+/* Interrupt flags - set by ISR, cleared by main logic */
+static volatile int s_AS_event = 0;
+static volatile int s_VS_event = 0;
+
+/* Forward declarations */
+static void PMc_process_timers(PacemakerC* s);
+static void PMc_handle_AS(PacemakerC* s);
+static void PMc_handle_VS(PacemakerC* s);
+static void PMc_check_pacing(PacemakerC* s);
+
+/* ==================== INTERRUPT SERVICE ROUTINES ==================== */
+
+/* 1ms tick ISR - handles all timer decrements */
+static alt_u32 PMc_tick_isr(void* context) {
+  PacemakerC* s = (PacemakerC*)context;
+
+  if (!s) return 1; /* Safety check */
+
+  /* Decrement all active timers atomically */
+  if (s->AVI > 0)   s->AVI--;
+  if (s->AEI > 0)   s->AEI--;
+  if (s->PVARP > 0) s->PVARP--;
+  if (s->VRP > 0)   s->VRP--;
+  if (s->LRI > 0)   s->LRI--;
+  if (s->URI > 0)   s->URI--;
+  if (s->AP_led_ms > 0) s->AP_led_ms--;
+  if (s->VP_led_ms > 0) s->VP_led_ms--;
+
+  /* Process timer expirations - this checks for pacing needs */
+  PMc_process_timers(s);
+
+  return 1; /* Re-schedule in 1ms */
 }
 
-int PMc_start_1ms_alarm(void) {
-  int r = alt_alarm_start(&s_alarm, 1, PMc_alarm_cb, NULL);
-  if (!s_banner_printed) {
-    s_banner_printed = 1;
-    printf("[C-MODE] C pacemaker running (ISR 1ms tick active)\n");
-    fflush(stdout);
+/* Atrial Sense ISR - triggered on AS input edge (if hardware supports it) */
+#ifdef ATRIAL_SENSE_BASE
+static void PMc_AS_isr(void* context) {
+  (void)context;
+
+  /* Clear the interrupt */
+  IOWR_ALTERA_AVALON_PIO_EDGE_CAP(ATRIAL_SENSE_BASE, 0x1);
+
+  /* Set flag for main processing */
+  s_AS_event = 1;
+
+  /* Immediate processing in ISR for time-critical response */
+  if (s_pm_ptr && s_pm_ptr->PVARP == 0) { /* Only if not in refractory */
+    s_pm_ptr->AS = 1;
+    PMc_handle_AS(s_pm_ptr);
   }
-  return r;
 }
+#endif
 
-static void dec_if_pos(int* t) { if (*t > 0) (*t)--; }
+/* Ventricular Sense ISR - triggered on VS input edge (if hardware supports it) */
+#ifdef VENTRICULAR_SENSE_BASE
+static void PMc_VS_isr(void* context) {
+  (void)context;
+
+  /* Clear the interrupt */
+  IOWR_ALTERA_AVALON_PIO_EDGE_CAP(VENTRICULAR_SENSE_BASE, 0x1);
+
+  /* Set flag for main processing */
+  s_VS_event = 1;
+
+  /* Immediate processing in ISR for time-critical response */
+  if (s_pm_ptr && s_pm_ptr->VRP == 0) { /* Only if not in refractory */
+    s_pm_ptr->VS = 1;
+    PMc_handle_VS(s_pm_ptr);
+  }
+}
+#endif
+
+/* ==================== INITIALIZATION ==================== */
 
 void PMc_init(PacemakerC* s) {
   memset(s, 0, sizeof(*s));
-  s->led_pulse_ms = 25;   /* default visibility */
-  s->LRI = LRI_VALUE;     /* start backup V timer so a VP will occur eventually */
+  s->led_pulse_ms = 25;
+  s->LRI = LRI_VALUE; /* Backup ventricular pacing */
 }
+
+/* Main initialization - keeps original name for compatibility */
+int PMc_start_1ms_alarm(void) {
+  return 0; /* Deprecated - use PMc_start_1ms_alarm_with_state */
+}
+
+/* New initialization that takes the state pointer */
+int PMc_start_1ms_alarm_with_state(PacemakerC* s) {
+  int status = 0;
+
+  if (!s) return -1;
+
+  /* Store pointer to user's state */
+  s_pm_ptr = s;
+
+  /* Register 1ms tick interrupt */
+  status = alt_alarm_start(&s_tick_alarm, 1, PMc_tick_isr, s);
+  if (status != 0) {
+    printf("[C-MODE] ERROR: Failed to start tick timer\n");
+    return status;
+  }
+
+  /* Configure and register Atrial Sense interrupt */
+#ifdef ATRIAL_SENSE_BASE
+  /* Enable edge capture on rising edge */
+  IOWR_ALTERA_AVALON_PIO_IRQ_MASK(ATRIAL_SENSE_BASE, 0x1);
+  IOWR_ALTERA_AVALON_PIO_EDGE_CAP(ATRIAL_SENSE_BASE, 0x1);
+
+  status = alt_ic_isr_register(
+    ATRIAL_SENSE_IRQ_INTERRUPT_CONTROLLER_ID,
+    ATRIAL_SENSE_IRQ,
+    PMc_AS_isr,
+    NULL,
+    NULL
+  );
+
+  if (status != 0) {
+    printf("[C-MODE] ERROR: Failed to register AS interrupt\n");
+    return status;
+  }
+#endif
+
+  /* Configure and register Ventricular Sense interrupt */
+#ifdef VENTRICULAR_SENSE_BASE
+  /* Enable edge capture on rising edge */
+  IOWR_ALTERA_AVALON_PIO_IRQ_MASK(VENTRICULAR_SENSE_BASE, 0x1);
+  IOWR_ALTERA_AVALON_PIO_EDGE_CAP(VENTRICULAR_SENSE_BASE, 0x1);
+
+  status = alt_ic_isr_register(
+    VENTRICULAR_SENSE_IRQ_INTERRUPT_CONTROLLER_ID,
+    VENTRICULAR_SENSE_IRQ,
+    PMc_VS_isr,
+    NULL,
+    NULL
+  );
+
+  if (status != 0) {
+    printf("[C-MODE] ERROR: Failed to register VS interrupt\n");
+    return status;
+  }
+#endif
+
+  if (!s_banner_printed) {
+    s_banner_printed = 1;
+    printf("[C-MODE] Interrupt-driven pacemaker initialized\n");
+    printf("  - 1ms tick timer: ACTIVE\n");
+#ifdef ATRIAL_SENSE_BASE
+    printf("  - AS edge interrupt: REGISTERED\n");
+#else
+    printf("  - AS: using polling mode (no interrupt hardware)\n");
+#endif
+#ifdef VENTRICULAR_SENSE_BASE
+    printf("  - VS edge interrupt: REGISTERED\n");
+#else
+    printf("  - VS: using polling mode (no interrupt hardware)\n");
+#endif
+    fflush(stdout);
+  }
+
+  return 0;
+}
+
+/* ==================== INTERRUPT HANDLERS (called from ISRs) ==================== */
+
+static void PMc_handle_AS(PacemakerC* s) {
+  /* Atrial sense detected - set refractory and start A-V interval */
+  s->PVARP = PVARP_VALUE;
+  s->AVI = AVI_VALUE;
+  s->AEI = 0; /* Cancel pending atrial pace */
+  s->seen_AS_since_last_V = 1;
+}
+
+static void PMc_handle_VS(PacemakerC* s) {
+  /* Ventricular sense detected - inhibits all pacing */
+  s->VRP = VRP_VALUE;
+  s->AEI = AEI_VALUE; /* Restart AEI for next atrial event */
+  s->LRI = LRI_VALUE; /* Restart backup timer */
+  s->URI = URI_VALUE;
+  s->seen_AS_since_last_V = 0;
+  s->AVI = 0; /* Cancel pending VP */
+  s->vp_waiting_for_URI = 0;
+  s->VP = 0;
+}
+
+static void PMc_process_timers(PacemakerC* s) {
+  /* Called from 1ms ISR after all timers decremented */
+
+  /* Check for AEI expiration -> Atrial Pace */
+  if (s->AEI == 0 && s->seen_AS_since_last_V == 0) {
+    s->AP = 1;
+    s->AP_fired = 1;
+    s->AP_led_ms = s->led_pulse_ms;
+    s->PVARP = PVARP_VALUE;
+    s->AVI = AVI_VALUE;
+    s->seen_AS_since_last_V = 1;
+  }
+
+  /* Check for ventricular pacing conditions */
+  PMc_check_pacing(s);
+}
+
+static void PMc_check_pacing(PacemakerC* s) {
+  int want_VP = 0;
+
+  /* VP needed if AVI expired after AS/AP */
+  if (s->AVI == 0 && s->seen_AS_since_last_V) {
+    want_VP = 1;
+  }
+
+  /* VP needed if LRI expired (backup pacing) */
+  if (s->LRI == 0) {
+    want_VP = 1;
+  }
+
+  if (want_VP) {
+    /* Can only pace if URI has expired
+     * VRP only blocks SENSING, not PACING */
+    if (s->URI == 0) {  // ← FIXED: removed VRP check
+      s->VP = 1;
+      s->VP_fired = 1;
+      s->VP_led_ms = s->led_pulse_ms;
+      s->VRP = VRP_VALUE;
+      s->AEI = AEI_VALUE;
+      s->LRI = LRI_VALUE;
+      s->URI = URI_VALUE;
+      s->AVI = 0;
+      s->vp_waiting_for_URI = 0;
+      s->seen_AS_since_last_V = 0;
+    } else {
+      /* Defer VP until URI expires */
+      s->vp_waiting_for_URI = 1;
+    }
+  }
+
+  /* If VP was deferred, pace as soon as URI expires */
+  if (s->vp_waiting_for_URI && s->URI == 0) {  // ← FIXED: removed VRP check
+    s->VP = 1;
+    s->VP_fired = 1;
+    s->VP_led_ms = s->led_pulse_ms;
+    s->VRP = VRP_VALUE;
+    s->AEI = AEI_VALUE;
+    s->LRI = LRI_VALUE;
+    s->URI = URI_VALUE;
+    s->AVI = 0;
+    s->vp_waiting_for_URI = 0;
+    s->seen_AS_since_last_V = 0;
+  }
+}
+
+/* ==================== PUBLIC API ==================== */
 
 void PMc_set_led_pulse_ms(PacemakerC* s, int ms) {
   s->led_pulse_ms = (ms > 0 ? ms : 1);
 }
 
+/* Legacy compatibility - handles polling if no sense interrupts available */
 void PMc_set_senses(PacemakerC* s, int AS_raw, int VS_raw) {
-  s->AS_raw = AS_raw;
-  s->VS_raw = VS_raw;
-  /* Optional sanity check: KEY2 press forces a print that confirms C-mode alive */
+  /* If using interrupt-driven senses, this does nothing */
+  /* If no interrupt hardware, fall back to polling */
+
+#ifndef ATRIAL_SENSE_BASE
+  /* Poll AS if no interrupt available */
+  if (AS_raw && s->PVARP == 0 && !s->AS) {
+    s->AS = 1;
+    PMc_handle_AS(s);
+  }
+#else
+  (void)AS_raw; /* Unused when interrupts available */
+#endif
+
+#ifndef VENTRICULAR_SENSE_BASE
+  /* Poll VS if no interrupt available */
+  if (VS_raw && s->VRP == 0 && !s->VS) {
+    s->VS = 1;
+    PMc_handle_VS(s);
+  }
+#else
+  (void)VS_raw; /* Unused when interrupts available */
+#endif
+
+  /* Sanity check button */
   alt_u32 keys = IORD_ALTERA_AVALON_PIO_DATA(KEYS_BASE);
-  if ((keys & 0x04) == 0) { /* KEY2 active-low */
-    printf("[C-MODE] Sanity button (KEY2) pressed ~ C version confirmed running.\n");
+  if ((keys & 0x04) == 0) {
+    printf("[C-MODE] Sanity check - Timer interrupt active");
+#if defined(ATRIAL_SENSE_BASE) || defined(VENTRICULAR_SENSE_BASE)
+    printf(", sense interrupts enabled");
+#endif
+    printf("\n");
     fflush(stdout);
   }
 }
 
-/* One 1-ms algorithm step */
-static void PMc_tick_1ms(PacemakerC* s) {
-  /* Decrement timers and LED stretch */
-  dec_if_pos(&s->AVI); dec_if_pos(&s->AEI); dec_if_pos(&s->PVARP);
-  dec_if_pos(&s->VRP); dec_if_pos(&s->LRI); dec_if_pos(&s->URI);
-  dec_if_pos(&s->AP_led_ms); dec_if_pos(&s->VP_led_ms);
-
-  /* Gate senses by refractory */
-  s->AS = (s->AS_raw && s->PVARP == 0);
-  s->VS = (s->VS_raw && s->VRP   == 0);
-
-  /* Default outputs this ms */
-  s->AP = 0; s->VP = 0;
-
-  /* Intrinsic events first */
-  if (s->VS) {
-    s->VRP = VRP_VALUE;
-    s->AEI = AEI_VALUE;
-    s->LRI = LRI_VALUE;
-    s->URI = URI_VALUE;
-    s->seen_AS_since_last_V = 0;
-    s->AVI = 0;                /* inhibit any pending AVI-based VP */
-    s->vp_waiting_for_URI = 0; /* cancel pending VP */
-  }
-  if (s->AS) {
-    s->PVARP = PVARP_VALUE;
-    s->AVI   = AVI_VALUE;      /* start A->V interval */
-    s->seen_AS_since_last_V = 1;
-  }
-
-  /* Atrial pacing on AEI timeout (if no AS since last V) */
-  if (s->AEI == 0 && s->seen_AS_since_last_V == 0) {
-    s->AP = 1; s->AP_fired = 1; s->AP_led_ms = s->led_pulse_ms;
-    s->PVARP = PVARP_VALUE;
-    s->AVI   = AVI_VALUE;
-    s->seen_AS_since_last_V = 1;
-  }
-
-  /* Ventricular pacing desire */
-  {
-    int want_VP = 0;
-    if (s->AVI == 0 && s->seen_AS_since_last_V) want_VP = 1;
-    if (s->LRI == 0)                            want_VP = 1;
-
-    if (want_VP) {
-      if (s->URI == 0) {
-        s->VP = 1; s->VP_fired = 1; s->VP_led_ms = s->led_pulse_ms;
-        s->VRP = VRP_VALUE; s->AEI = AEI_VALUE; s->LRI = LRI_VALUE; s->URI = URI_VALUE;
-        s->AVI = 0; s->vp_waiting_for_URI = 0; s->seen_AS_since_last_V = 0;
-      } else {
-        s->vp_waiting_for_URI = 1;
-      }
-    }
-
-    /* If we owe a VP but were blocked by URI, pace as soon as it expires */
-    if (s->vp_waiting_for_URI && s->URI == 0) {
-      s->VP = 1; s->VP_fired = 1; s->VP_led_ms = s->led_pulse_ms;
-      s->VRP = VRP_VALUE; s->AEI = AEI_VALUE; s->LRI = LRI_VALUE; s->URI = URI_VALUE;
-      s->AVI = 0; s->vp_waiting_for_URI = 0; s->seen_AS_since_last_V = 0;
-    }
-  }
-
-  /* Raw senses are one-ms pulses; clear after consumption */
-  s->AS_raw = 0; s->VS_raw = 0;
+/* No longer needed - timers run in ISR */
+void PMc_run_for_elapsed_ms(PacemakerC* s) {
+  /* ISR handles everything automatically, but keep function for compatibility */
+  (void)s;
 }
 
-void PMc_run_for_elapsed_ms(PacemakerC* s) {
-  while (s_ms_ticks) {
-    PMc_tick_1ms(s);
-    s_ms_ticks--;
-  }
+/* Helper to register state and start - call this from main! */
+int PMc_start_with_state(PacemakerC* s) {
+  return PMc_start_1ms_alarm_with_state(s);
 }
 
 void PMc_poll_and_clear_pulses(PacemakerC* s, int* AP_any, int* VP_any) {
+  /* Disable interrupts briefly for atomic read */
+  alt_irq_context context = alt_irq_disable_all();
+
   if (AP_any) *AP_any = s->AP_fired;
   if (VP_any) *VP_any = s->VP_fired;
   s->AP_fired = 0;
   s->VP_fired = 0;
+
+  alt_irq_enable_all(context);
 }
 
-int PMc_led_AP_on(const PacemakerC* s) { return (s->AP_led_ms > 0); }
-int PMc_led_VP_on(const PacemakerC* s) { return (s->VP_led_ms > 0); }
+int PMc_led_AP_on(const PacemakerC* s) {
+  return (s->AP_led_ms > 0);
+}
+
+int PMc_led_VP_on(const PacemakerC* s) {
+  return (s->VP_led_ms > 0);
+}
+
+/* Initialize and start - call ONCE after PMc_init() */
+int PMc_enable_interrupts(PacemakerC* s) {
+  return PMc_start_1ms_alarm_with_state(s);
+}

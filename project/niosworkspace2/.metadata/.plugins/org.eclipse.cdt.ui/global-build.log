@@ -1,4 +1,7 @@
-20:20:19 **** Build of configuration Nios II for project niosproject2 ****
+21:31:37 **** Clean-only build of configuration Nios II for project niosproject2 ****
+make clean 
+[niosproject2 clean complete]
+21:31:41 **** Build of configuration Nios II for project niosproject2 ****
 make all 
 Info: Building ../niosproject2_bsp/
 C:/intelFPGA/18.1/nios2eds/bin/gnu/H-x86_64-mingw32/bin/make --no-print-directory -C ../niosproject2_bsp/
@@ -94,93 +97,32 @@ nios2-elf-gcc -xc -MP -MMD -c -I../niosproject2_bsp//HAL/inc -I../niosproject2_b
 Info: Compiling main.c to obj/default/main.o
 nios2-elf-gcc -xc -MP -MMD -c -I../niosproject2_bsp//HAL/inc -I../niosproject2_bsp/ -I../niosproject2_bsp//drivers/inc  -pipe -D__hal__ -DALT_NO_INSTRUCTION_EMULATION -DALT_SINGLE_THREADED    -O0 -g -Wall   -mno-hw-div -mhw-mul -mno-hw-mulx -mgpopt=global  -o obj/default/main.o main.c
 main.c: In function 'handle_buttons_inputs_with_debug':
-main.c:59:40: warning: format '%u' expects argument of type 'unsigned int', but argument 2 has type 'alt_u32 {aka long unsigned int}' [-Wformat=]
+main.c:73:40: warning: format '%u' expects argument of type 'unsigned int', but argument 2 has type 'alt_u32 {aka long unsigned int}' [-Wformat=]
    if (as_pressed){ g_pm.AS = 1; printf("[BTN] AS pressed (KEY1) @ %ums\n", ms_now()); }
                                         ^
-main.c:59:40: warning: format '%u' expects argument of type 'unsigned int', but argument 2 has type 'alt_u32 {aka long unsigned int}' [-Wformat=]
-main.c:60:40: warning: format '%u' expects argument of type 'unsigned int', but argument 2 has type 'alt_u32 {aka long unsigned int}' [-Wformat=]
+main.c:73:40: warning: format '%u' expects argument of type 'unsigned int', but argument 2 has type 'alt_u32 {aka long unsigned int}' [-Wformat=]
+main.c:74:40: warning: format '%u' expects argument of type 'unsigned int', but argument 2 has type 'alt_u32 {aka long unsigned int}' [-Wformat=]
    if (vs_pressed){ g_pm.VS = 1; printf("[BTN] VS pressed (KEY0) @ %ums\n", ms_now()); }
                                         ^
-main.c:60:40: warning: format '%u' expects argument of type 'unsigned int', but argument 2 has type 'alt_u32 {aka long unsigned int}' [-Wformat=]
+main.c:74:40: warning: format '%u' expects argument of type 'unsigned int', but argument 2 has type 'alt_u32 {aka long unsigned int}' [-Wformat=]
 main.c: In function 'heartbeat_stdout':
-main.c:89:12: warning: format '%u' expects argument of type 'unsigned int', but argument 2 has type 'alt_u32 {aka long unsigned int}' [-Wformat=]
+main.c:103:12: warning: format '%u' expects argument of type 'unsigned int', but argument 2 has type 'alt_u32 {aka long unsigned int}' [-Wformat=]
      printf("[HB] t=%ums\n", now);
             ^
-main.c:89:12: warning: format '%u' expects argument of type 'unsigned int', but argument 2 has type 'alt_u32 {aka long unsigned int}' [-Wformat=]
+main.c:103:12: warning: format '%u' expects argument of type 'unsigned int', but argument 2 has type 'alt_u32 {aka long unsigned int}' [-Wformat=]
 main.c: In function 'main':
-main.c:105:3: error: too few arguments to function 'PMc_init'
-   PMc_init();
-   ^
-In file included from main.c:20:0:
-Pacemaker_C.h:43:6: note: declared here
- void PMc_init(PacemakerC* s);
-      ^
-main.c:153:22: warning: passing argument 1 of 'PMc_set_senses' makes pointer from integer without a cast [-Wint-conversion]
-       PMc_set_senses(as, vs);
+main.c:168:22: warning: implicit declaration of function 'PMc_enable_interrupts' [-Wimplicit-function-declaration]
+         int status = PMc_enable_interrupts(&g_c);
                       ^
-In file included from main.c:20:0:
-Pacemaker_C.h:53:6: note: expected 'PacemakerC * {aka struct <anonymous> *}' but argument is of type 'int'
- void PMc_set_senses(PacemakerC* s, int AS_raw, int VS_raw);
-      ^
-main.c:153:7: error: too few arguments to function 'PMc_set_senses'
-       PMc_set_senses(as, vs);
-       ^
-In file included from main.c:20:0:
-Pacemaker_C.h:53:6: note: declared here
- void PMc_set_senses(PacemakerC* s, int AS_raw, int VS_raw);
-      ^
-main.c:161:30: warning: passing argument 1 of 'PMc_run_for_elapsed_ms' makes pointer from integer without a cast [-Wint-conversion]
-       PMc_run_for_elapsed_ms(elapsed_ms);
-                              ^
-In file included from main.c:20:0:
-Pacemaker_C.h:50:6: note: expected 'PacemakerC * {aka struct <anonymous> *}' but argument is of type 'int'
- void PMc_run_for_elapsed_ms(PacemakerC* s);
-      ^
-main.c:164:33: warning: passing argument 1 of 'PMc_poll_and_clear_pulses' from incompatible pointer type [-Wincompatible-pointer-types]
-       PMc_poll_and_clear_pulses(&AP, &VP);
-                                 ^
-In file included from main.c:20:0:
-Pacemaker_C.h:56:6: note: expected 'PacemakerC * {aka struct <anonymous> *}' but argument is of type 'int *'
- void PMc_poll_and_clear_pulses(PacemakerC* s, int* AP_any, int* VP_any);
-      ^
-main.c:164:7: error: too few arguments to function 'PMc_poll_and_clear_pulses'
-       PMc_poll_and_clear_pulses(&AP, &VP);
-       ^
-In file included from main.c:20:0:
-Pacemaker_C.h:56:6: note: declared here
- void PMc_poll_and_clear_pulses(PacemakerC* s, int* AP_any, int* VP_any);
-      ^
-make: *** [obj/default/main.o] Error 1
-20:22:44 **** Build of configuration Nios II for project niosproject2 ****
-make all 
-Info: Building ../niosproject2_bsp/
-C:/intelFPGA/18.1/nios2eds/bin/gnu/H-x86_64-mingw32/bin/make --no-print-directory -C ../niosproject2_bsp/
-[BSP build complete]
-Info: Compiling main.c to obj/default/main.o
-nios2-elf-gcc -xc -MP -MMD -c -I../niosproject2_bsp//HAL/inc -I../niosproject2_bsp/ -I../niosproject2_bsp//drivers/inc  -pipe -D__hal__ -DALT_NO_INSTRUCTION_EMULATION -DALT_SINGLE_THREADED    -O0 -g -Wall   -mno-hw-div -mhw-mul -mno-hw-mulx -mgpopt=global  -o obj/default/main.o main.c
-main.c: In function 'handle_buttons_inputs_with_debug':
-main.c:72:40: warning: format '%u' expects argument of type 'unsigned int', but argument 2 has type 'alt_u32 {aka long unsigned int}' [-Wformat=]
-   if (as_pressed){ g_pm.AS = 1; printf("[BTN] AS pressed (KEY1) @ %ums\n", ms_now()); }
-                                        ^
-main.c:72:40: warning: format '%u' expects argument of type 'unsigned int', but argument 2 has type 'alt_u32 {aka long unsigned int}' [-Wformat=]
-main.c:73:40: warning: format '%u' expects argument of type 'unsigned int', but argument 2 has type 'alt_u32 {aka long unsigned int}' [-Wformat=]
-   if (vs_pressed){ g_pm.VS = 1; printf("[BTN] VS pressed (KEY0) @ %ums\n", ms_now()); }
-                                        ^
-main.c:73:40: warning: format '%u' expects argument of type 'unsigned int', but argument 2 has type 'alt_u32 {aka long unsigned int}' [-Wformat=]
-main.c: In function 'heartbeat_stdout':
-main.c:102:12: warning: format '%u' expects argument of type 'unsigned int', but argument 2 has type 'alt_u32 {aka long unsigned int}' [-Wformat=]
-     printf("[HB] t=%ums\n", now);
-            ^
-main.c:102:12: warning: format '%u' expects argument of type 'unsigned int', but argument 2 has type 'alt_u32 {aka long unsigned int}' [-Wformat=]
 Info: Linking niosproject2.elf
 nios2-elf-g++  -T'../niosproject2_bsp//linker.x' -msys-crt0='../niosproject2_bsp//obj/HAL/src/crt0.o' -msys-lib=hal_bsp -L../niosproject2_bsp/   -Wl,-Map=niosproject2.map   -O0 -g -Wall   -mno-hw-div -mhw-mul -mno-hw-mulx -mgpopt=global  -o niosproject2.elf obj/default/Pacemaker.o obj/default/Pacemaker_C.o obj/default/hello_world.o obj/default/main.o -lm -msys-lib=m
 nios2-elf-insert niosproject2.elf --thread_model hal --cpu_name cpu --qsys true --simulation_enabled false --stderr_dev jtag_uart --stdin_dev jtag_uart --stdout_dev jtag_uart --sopc_system_name nios2_system --quartus_project_dir "C:/Users/ylee903/Compsys-303/project/DE2-115" --sopcinfo C:/Users/ylee903/Compsys-303/project/DE2-115/software/niosproject2_bsp/../../nios2_system.sopcinfo
-Info: (niosproject2.elf) 103 KBytes program size (code + initialized data).
-Info:                    8081 KBytes free for stack + heap.
+Info: (niosproject2.elf) 104 KBytes program size (code + initialized data).
+Info:                    8080 KBytes free for stack + heap.
 Info: Creating niosproject2.objdump
 nios2-elf-objdump --disassemble --syms --all-header --source niosproject2.elf >niosproject2.objdump
 [niosproject2 build complete]
-20:22:46 **** Incremental Build of configuration Nios II for project niosproject2 ****
+21:31:43 **** Incremental Build of configuration Nios II for project niosproject2 ****
 make all 
 Info: Building ../niosproject2_bsp/
 C:/intelFPGA/18.1/nios2eds/bin/gnu/H-x86_64-mingw32/bin/make --no-print-directory -C ../niosproject2_bsp/

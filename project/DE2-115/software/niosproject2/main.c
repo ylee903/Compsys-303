@@ -44,6 +44,7 @@ static alt_u32  g_prev_keys = 0xFFFFFFFF; // init to all 1s (no press)
 
 /* C‑mode engine instance */
 static PacemakerC g_c;           /* must be passed by pointer to all PMc_* calls */
+static int g_c_initialized = 0;  /* track if C-mode ISRs are running */
 
 /* ------------------- Utilities ------------------- */
 static inline alt_u32 ms_now(void){
@@ -115,10 +116,9 @@ int main(void){
   g_last_hb_ms = 0;
   g_prev_keys = IORD_ALTERA_AVALON_PIO_DATA(KEYS_BASE);
 
-  /* Init C‑mode engine (FIX: pass &g_c, start 1ms ISR, set LED pulse len) */
+  /* Init C‑mode engine - FIXED: proper initialization sequence */
   PMc_init(&g_c);
   PMc_set_led_pulse_ms(&g_c, 75);  // extend LED visibility
-  PMc_start_1ms_alarm();           // start internal 1ms ticker
 
   printf("\n==== COMPSYS303 Pacemaker (SCCharts + C-mode) ====\n");
   printf("UART dev: %s (115200 8N1)\n", UART_NAME);
@@ -162,6 +162,20 @@ int main(void){
 
     } else {
       /* -------------------- C‑mode path (Pacemaker_C) -------------------- */
+
+      /* FIXED: Start interrupts on first entry to C-mode */
+      if (!g_c_initialized) {
+        int status = PMc_enable_interrupts(&g_c);
+        if (status == 0) {
+          g_c_initialized = 1;
+          printf("[OK ] C-mode interrupts started\n");
+          fflush(stdout);
+        } else {
+          printf("[ERR] Failed to start C-mode interrupts: %d\n", status);
+          fflush(stdout);
+        }
+      }
+
       if (uart_source) { handle_uart_inputs(); } else { handle_buttons_inputs_with_debug(); }
 
       /* capture & clear 1‑tick senses */
@@ -169,16 +183,17 @@ int main(void){
       int vs = g_pm.VS;
       g_pm.AS = g_pm.VS = 0;
 
-      /* FIX: pass &g_c to all C‑mode API calls */
+      /* Pass sense events to C-mode engine */
       PMc_set_senses(&g_c, as, vs);
 
-      /* Engine advances on internal 1ms ISR; this drains pending ticks */
+      /* Engine advances automatically via 1ms ISR - this is now a no-op */
       PMc_run_for_elapsed_ms(&g_c);
 
+      /* Read and clear pace outputs */
       int AP=0, VP=0;
       PMc_poll_and_clear_pulses(&g_c, &AP, &VP);
 
-      /* Option A: stretched LEDs from engine (recommended for visibility) */
+      /* Show LEDs (stretched pulse from internal timers) */
       leds_show_pace(PMc_led_AP_on(&g_c), PMc_led_VP_on(&g_c));
 
       /* UART echo for the virtual heart */
