@@ -1,0 +1,50 @@
+/*
+ * Minimal main.c to drive Pacemaker_C from buttons only.
+ * - KEY1 -> AS (active-low)
+ * - KEY0 -> VS (active-low)
+ * - LEDG1 <- AP (stretched inside Pacemaker_C)
+ * - LEDG0 <- VP (stretched inside Pacemaker_C)
+ * - LEDR[1:0] show one-tick senses (set by Pacemaker_C each loop)
+ */
+
+#include <stdio.h>
+#include <system.h>
+#include <altera_avalon_pio_regs.h>
+#include <sys/alt_alarm.h>
+#include <sys/alt_timestamp.h>
+#include "Pacemaker_C.h"
+
+static inline unsigned key_read(void){ return IORD_ALTERA_AVALON_PIO_DATA(KEYS_BASE); }
+
+int main(void){
+  /* optional high-res timer; not required for this minimal loop */
+  (void)alt_timestamp_start();
+
+  initC();
+
+  printf("=== Pacemaker C-mode (buttons only) ===\n");
+  printf("KEY1=AS (active-low), KEY0=VS (active-low)\n");
+
+  /* Track previous to do edge detect for pulses */
+  unsigned prev_keys = key_read();
+
+  while (1){
+    /* Build one-tick pulse mask from button edges (falling edges only) */
+    unsigned keys = key_read();
+    int buttonMask = 0;
+
+    /* KEY1 low -> AS pulse */
+    if ( (prev_keys & 0x02) && !(keys & 0x02) ) buttonMask |= (1 << 1);
+    /* KEY0 low -> VS pulse */
+    if ( (prev_keys & 0x01) && !(keys & 0x01) ) buttonMask |= (1 << 0);
+
+    prev_keys = keys;
+
+    /* Run one step. dt is not used internally (alarms drive timing), pass 1. */
+    execC(1.0, BUTTON, &buttonMask);
+
+    /* Small busy-wait: the alarm callbacks run independently anyway */
+    /* You can add a short delay if you want to save CPU. */
+  }
+  return 0;
+}

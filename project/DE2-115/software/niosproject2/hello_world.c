@@ -1,24 +1,210 @@
-///*
-// * "Hello World" example.
-// *
-// * This example prints 'Hello from Nios II' to the STDOUT stream. It runs on
-// * the Nios II 'standard', 'full_featured', 'fast', and 'low_cost' example
-// * designs. It runs with or without the MicroC/OS-II RTOS and requires a STDOUT
-// * device in your system's hardware.
-// * The memory footprint of this hosted application is ~69 kbytes by default
-// * using the standard reference design.
-// *
-// * For a reduced footprint version of this template, and an explanation of how
-// * to reduce the memory footprint for a given application, see the
-// * "small_hello_world" template.
-// *
-// */
-//
-//#include <stdio.h>
-//
-//int main()
-//{
-//  printf("Hello from Nios II!\n");
-//
-//  return 0;
-//}
+// /*
+//  * main.c — COMPSYS 303 Pacemaker (SCCharts + C-mode) with button/UART inputs
+//  *
+//  * Modes (per assignment):
+//  *   SW0: 0 = SCCharts   | 1 = C implementation (Pacemaker_C)
+//  *   SW1: 0 = Buttons    | 1 = UART (virtual heart)
+//  *
+//  * I/O mapping (DE0-CV typical):
+//  *   KEY1 -> AS (active‑low)   |  KEY0 -> VS (active‑low)
+//  *   LEDG1 <- AP               |  LEDG0 <- VP
+//  *   LEDR[1:0] mirror SW[1:0]
+//  *
+//  * Console: STDOUT=/dev/jtag_uart (Nios II Console)
+//  */
+
+// #include <stdio.h>
+// #include <string.h>
+// #include <fcntl.h>
+// #include <unistd.h>
+
+// #include <system.h>
+// #include <alt_types.h>
+// #include <altera_avalon_pio_regs.h>
+// #include <sys/alt_timestamp.h>
+// #include <sys/alt_irq.h>
+// #include <sys/alt_alarm.h>
+
+// #include "Pacemaker.h"     // SCCharts API: reset(), tick(), TickData
+// #include "timing.h"        // constants: AVI_VALUE, AEI_VALUE, etc.
+// #include "Pacemaker_C.h"   // C-mode API (requires PacemakerC* instance)
+
+// #ifndef UART_NAME
+//   #define UART_NAME "/dev/uart"
+// #endif
+
+// #define HEARTBEAT_MS 1000
+
+// /* ------------------- Globals ------------------- */
+// static TickData g_pm;            /* SCCharts instance */
+// static int      g_uart_fd   = -1;
+// static alt_u32  g_last_tick = 0;
+// static alt_u32  g_last_hb_ms = 0;
+// static alt_u32  g_prev_keys = 0xFFFFFFFF; // init to all 1s (no press)
+
+// /* C‑mode engine instance */
+// static PacemakerC g_c;           /* must be passed by pointer to all PMc_* calls */
+// static int g_c_initialized = 0;  /* track if C-mode ISRs are running */
+
+// /* ------------------- Utilities ------------------- */
+// static inline alt_u32 ms_now(void){
+//   alt_u64 t = alt_timestamp();
+//   alt_u32 f = alt_timestamp_freq();
+//   if (!f) return 0;
+//   return (alt_u32)((t * 1000ULL) / (alt_u64)f);
+// }
+
+// static void leds_show_mode(alt_u32 sw){
+//   IOWR_ALTERA_AVALON_PIO_DATA(LEDS_RED_BASE, (sw & 0x03));
+// }
+
+// static void leds_show_pace(int AP_on, int VP_on){
+//   alt_u32 g = 0;
+//   if (AP_on) g |= 0x02; // LEDG1
+//   if (VP_on) g |= 0x01; // LEDG0
+//   IOWR_ALTERA_AVALON_PIO_DATA(LEDS_GREEN_BASE, g);
+// }
+
+// // Buttons path: active‑low, edge‑detect presses
+// static void handle_buttons_inputs_with_debug(void){
+//   alt_u32 keys = IORD_ALTERA_AVALON_PIO_DATA(KEYS_BASE);
+//   int as_pressed =  ((g_prev_keys & 0x02) != 0) && ((keys & 0x02) == 0);
+//   int vs_pressed =  ((g_prev_keys & 0x01) != 0) && ((keys & 0x01) == 0);
+//   if (as_pressed){ g_pm.AS = 1; printf("[BTN] AS pressed (KEY1) @ %ums\n", ms_now()); }
+//   if (vs_pressed){ g_pm.VS = 1; printf("[BTN] VS pressed (KEY0) @ %ums\n", ms_now()); }
+//   g_prev_keys = keys;
+// }
+
+// static void handle_uart_inputs(void){
+//   char ch; int n;
+//   while ((n = read(g_uart_fd, &ch, 1)) > 0){
+//     if (ch == 'A' || ch == 'a') g_pm.AS = 1;
+//     if (ch == 'V' || ch == 'v') g_pm.VS = 1;
+//   }
+// }
+
+// static void uart_send_probe(void){
+//   if (g_uart_fd >= 0) {
+//     const char *probe = "HELLO_FROM_BOARD\r\n";
+//     (void)write(g_uart_fd, probe, (int)strlen(probe));
+//   }
+// }
+
+// static void uart_send_pace_bytes_if_enabled(int uart_enabled, int AP, int VP){
+//   if (!uart_enabled || g_uart_fd < 0) return;
+//   if (AP) { const char A = 'A'; (void)write(g_uart_fd, &A, 1); }
+//   if (VP) { const char V = 'V'; (void)write(g_uart_fd, &V, 1); }
+// }
+
+// static void heartbeat_stdout(void){
+//   alt_u32 now = ms_now();
+//   if (now - g_last_hb_ms >= HEARTBEAT_MS){
+//     g_last_hb_ms = now;
+//     printf("[HB] t=%ums\n", now);
+//     fflush(stdout);
+//   }
+// }
+
+// /* ------------------- main ------------------- */
+// int main(void){
+//   reset(&g_pm);
+
+//   if (alt_timestamp_start() < 0){
+//     printf("[ERR] alt_timestamp_start failed\n");
+//   }
+//   g_last_tick = alt_timestamp();
+//   g_last_hb_ms = 0;
+//   g_prev_keys = IORD_ALTERA_AVALON_PIO_DATA(KEYS_BASE);
+
+//   /* Init C‑mode engine - FIXED: proper initialization sequence */
+//   PMc_init(&g_c);
+//   PMc_set_led_pulse_ms(&g_c, 75);  // extend LED visibility
+
+//   printf("\n==== COMPSYS303 Pacemaker (SCCharts + C-mode) ====\n");
+//   printf("UART dev: %s (115200 8N1)\n", UART_NAME);
+//   printf("Timings: AVI=%d AEI=%d PVARP=%d VRP=%d LRI=%d URI=%d (ms)\n",
+//          AVI_VALUE, AEI_VALUE, PVARP_VALUE, VRP_VALUE, LRI_VALUE, URI_VALUE);
+//   printf("SW0: 0=SCCharts,1=C  |  SW1: 0=Buttons,1=UART\n");
+//   fflush(stdout);
+
+//   g_uart_fd = open(UART_NAME, O_RDWR | O_NONBLOCK);
+//   if (g_uart_fd < 0) {
+//     printf("[ERR] open(%s) failed — check SOPC name/pins/cable.\n", UART_NAME);
+//   } else {
+//     printf("[OK ] %s opened.\n", UART_NAME);
+//     uart_send_probe();
+//   }
+//   fflush(stdout);
+
+//   while (1){
+//     alt_u32 sw = IORD_ALTERA_AVALON_PIO_DATA(SWITCHES_BASE);
+//     leds_show_mode(sw);
+
+//     int sccharts_mode = ((sw & 0x01) == 0); // SW0=0 -> SCCharts
+//     int uart_source   = ((sw & 0x02) != 0); // SW1=1 -> UART
+
+//     /* Keep SCCharts deltaT accurate (ms) using timestamp freq */
+//     alt_u32 now_ticks = alt_timestamp();
+//     alt_u32 elapsed   = now_ticks - g_last_tick;
+//     g_last_tick       = now_ticks;
+//     g_pm.deltaT = (double)elapsed * 1000.0 / (double)alt_timestamp_freq();
+
+//     if (sccharts_mode){
+//       if (uart_source) { handle_uart_inputs(); } else { handle_buttons_inputs_with_debug(); }
+
+//       tick(&g_pm);
+//       leds_show_pace(g_pm.AP, g_pm.VP);
+//       uart_send_pace_bytes_if_enabled(uart_source, g_pm.AP, g_pm.VP);
+
+//       /* consume one‑tick inputs */
+//       g_pm.AS = 0;
+//       g_pm.VS = 0;
+
+//     } else {
+//       /* -------------------- C‑mode path (Pacemaker_C) -------------------- */
+
+//       /* FIXED: Start interrupts on first entry to C-mode */
+//       if (!g_c_initialized) {
+//         int status = PMc_enable_interrupts(&g_c);
+//         if (status == 0) {
+//           g_c_initialized = 1;
+//           printf("[OK ] C-mode interrupts started\n");
+//           fflush(stdout);
+//         } else {
+//           printf("[ERR] Failed to start C-mode interrupts: %d\n", status);
+//           fflush(stdout);
+//         }
+//       }
+
+//       if (uart_source) { handle_uart_inputs(); } else { handle_buttons_inputs_with_debug(); }
+
+//       /* capture & clear 1‑tick senses */
+//       int as = g_pm.AS;
+//       int vs = g_pm.VS;
+//       g_pm.AS = g_pm.VS = 0;
+
+//       /* Pass sense events to C-mode engine */
+//       PMc_set_senses(&g_c, as, vs);
+
+//       /* Engine advances automatically via 1ms ISR - this is now a no-op */
+//       PMc_run_for_elapsed_ms(&g_c);
+
+//       /* Read and clear pace outputs */
+//       int AP=0, VP=0;
+//       PMc_poll_and_clear_pulses(&g_c, &AP, &VP);
+
+//       /* Show LEDs (stretched pulse from internal timers) */
+//       leds_show_pace(PMc_led_AP_on(&g_c), PMc_led_VP_on(&g_c));
+
+//       /* UART echo for the virtual heart */
+//       uart_send_pace_bytes_if_enabled(uart_source, AP, VP);
+
+//       if (AP) printf("[C ] AP fired (AEI path)\n");
+//       if (VP) printf("[C ] VP fired (ventricular path)\n");
+//     }
+
+//     heartbeat_stdout();
+//   }
+
+//   return 0;
+// }

@@ -1,12 +1,12 @@
 /*
- * main.c — COMPSYS 303 Pacemaker (SCCharts + minimal C-mode)
+ * main.c — COMPSYS 303 Pacemaker (SCCharts + C-mode) with button/UART inputs
  *
  * Modes (per assignment):
- *   SW0: 0 = SCCharts   | 1 = C implementation (Pacemaker_C minimal)
+ *   SW0: 0 = SCCharts   | 1 = C implementation (Pacemaker_C)
  *   SW1: 0 = Buttons    | 1 = UART (virtual heart)
  *
  * I/O mapping (DE0-CV typical):
- *   KEY1 -> AS (active-low)   |  KEY0 -> VS (active-low)
+ *   KEY1 -> AS (active‑low)   |  KEY0 -> VS (active‑low)
  *   LEDG1 <- AP               |  LEDG0 <- VP
  *   LEDR[1:0] mirror SW[1:0]
  *
@@ -27,7 +27,7 @@
 
 #include "Pacemaker.h"     // SCCharts API: reset(), tick(), TickData
 #include "timing.h"        // constants: AVI_VALUE, AEI_VALUE, etc.
-#include "Pacemaker_C.h"   // Minimal C-mode: initC(), execC(), Mode, BUTTON/UART
+#include "Pacemaker_C.h"   // C-mode API (requires PacemakerC* instance)
 
 #ifndef UART_NAME
   #define UART_NAME "/dev/uart"
@@ -41,6 +41,10 @@ static int      g_uart_fd   = -1;
 static alt_u32  g_last_tick = 0;
 static alt_u32  g_last_hb_ms = 0;
 static alt_u32  g_prev_keys = 0xFFFFFFFF; // init to all 1s (no press)
+
+/* C‑mode engine instance */
+static PacemakerC g_c;           /* must be passed by pointer to all PMc_* calls */
+static int g_c_initialized = 0;  /* track if C-mode ISRs are running */
 
 /* ------------------- Utilities ------------------- */
 static inline alt_u32 ms_now(void){
@@ -112,10 +116,11 @@ int main(void){
   g_last_hb_ms = 0;
   g_prev_keys = IORD_ALTERA_AVALON_PIO_DATA(KEYS_BASE);
 
-  /* Init minimal C‑mode engine */
-  initC();
+  /* Init C‑mode engine - FIXED: proper initialization sequence */
+  PMc_init(&g_c);
+  PMc_set_led_pulse_ms(&g_c, 75);  // extend LED visibility
 
-  printf("\n==== COMPSYS303 Pacemaker (SCCharts + minimal C-mode) ====\n");
+  printf("\n==== COMPSYS303 Pacemaker (SCCharts + C-mode) ====\n");
   printf("UART dev: %s (115200 8N1)\n", UART_NAME);
   printf("Timings: AVI=%d AEI=%d PVARP=%d VRP=%d LRI=%d URI=%d (ms)\n",
          AVI_VALUE, AEI_VALUE, PVARP_VALUE, VRP_VALUE, LRI_VALUE, URI_VALUE);
@@ -156,19 +161,46 @@ int main(void){
       g_pm.VS = 0;
 
     } else {
-      /* -------------------- Minimal C‑mode path (Pacemaker_C) -------------------- */
+      /* -------------------- C‑mode path (Pacemaker_C) -------------------- */
+
+      /* FIXED: Start interrupts on first entry to C-mode */
+      if (!g_c_initialized) {
+        int status = PMc_enable_interrupts(&g_c);
+        if (status == 0) {
+          g_c_initialized = 1;
+          printf("[OK ] C-mode interrupts started\n");
+          fflush(stdout);
+        } else {
+          printf("[ERR] Failed to start C-mode interrupts: %d\n", status);
+          fflush(stdout);
+        }
+      }
+
       if (uart_source) { handle_uart_inputs(); } else { handle_buttons_inputs_with_debug(); }
 
-      /* Map SCCharts one‑tick senses to minimal C‑mode button bits */
-      int button = 0;
-      if (g_pm.VS) button |= (1 << 0); // bit0 = VS
-      if (g_pm.AS) button |= (1 << 1); // bit1 = AS
-      g_pm.AS = g_pm.VS = 0;           // consume pulses
+      /* capture & clear 1‑tick senses */
+      int as = g_pm.AS;
+      int vs = g_pm.VS;
+      g_pm.AS = g_pm.VS = 0;
 
-      Mode m = uart_source ? UART : BUTTON;
-      execC(1.0, m, &button);          // timers live in Pacemaker_C.c via alt_alarm
+      /* Pass sense events to C-mode engine */
+      PMc_set_senses(&g_c, as, vs);
 
-      /* NOTE: Minimal C-mode handles LEDs and (stub) UART internally. */
+      /* Engine advances automatically via 1ms ISR - this is now a no-op */
+      PMc_run_for_elapsed_ms(&g_c);
+
+      /* Read and clear pace outputs */
+      int AP=0, VP=0;
+      PMc_poll_and_clear_pulses(&g_c, &AP, &VP);
+
+      /* Show LEDs (stretched pulse from internal timers) */
+      leds_show_pace(PMc_led_AP_on(&g_c), PMc_led_VP_on(&g_c));
+
+      /* UART echo for the virtual heart */
+      uart_send_pace_bytes_if_enabled(uart_source, AP, VP);
+
+      if (AP) printf("[C ] AP fired (AEI path)\n");
+      if (VP) printf("[C ] VP fired (ventricular path)\n");
     }
 
     heartbeat_stdout();
