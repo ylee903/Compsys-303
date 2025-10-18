@@ -1,61 +1,133 @@
-/*
- * Pacemaker_C.c — debug-only timer (1 Hz AP pulse)
- * -------------------------------------------------
- * Uses the global 1 ms increment to trigger AP
- * every 1000 ms.  No sensing, no pacing logic.
- */
-
+#include <string.h>
 #include <stdio.h>
-#include <stdint.h>
+#include <sys/alt_alarm.h>
+#include <altera_avalon_pio_regs.h>
 #include "Pacemaker_C.h"
-#include "timing.h"   // optional, but harmless
+#include <system.h>
 
-/* -------------------------------------------------
-   Module-local state
-   ------------------------------------------------- */
-static int s_ms_counter = 0;
-static int s_AP_pulse    = 0;
+/* Module-local 1ms ticker */
+static volatile alt_u32 s_ms_ticks = 0;
+static alt_alarm s_alarm;
+static int s_banner_printed = 0;
 
-/* -------------------------------------------------
-   API expected by main.c
-   ------------------------------------------------- */
-int PMc_init(void) {
-    s_ms_counter = 0;
-    s_AP_pulse   = 0;
-    return 0;
+static alt_u32 PMc_alarm_cb(void* ctx) {
+  (void)ctx;
+  s_ms_ticks++;
+  return 1; /* schedule next callback in 1 ms */
 }
 
 int PMc_start_1ms_alarm(void) {
-    // no hardware timer; main drives time manually
-    return 0;
+  int r = alt_alarm_start(&s_alarm, 1, PMc_alarm_cb, NULL);
+  if (!s_banner_printed) {
+    s_banner_printed = 1;
+    printf("[C-MODE] C pacemaker running (ISR 1ms tick active)\n");
+    fflush(stdout);
+  }
+  return r;
 }
 
-void PMc_set_senses(int AS_pulse, int VS_pulse) {
-    (void)AS_pulse;
-    (void)VS_pulse;
+static void dec_if_pos(int* t) { if (*t > 0) (*t)--; }
+
+void PMc_init(PacemakerC* s) {
+  memset(s, 0, sizeof(*s));
+  s->led_pulse_ms = 25;   /* default visibility */
+  s->LRI = LRI_VALUE;     /* start backup V timer so a VP will occur eventually */
 }
 
-/* -------------------------------------------------
-   Run for N milliseconds (called each loop)
-   ------------------------------------------------- */
-void PMc_run_for_elapsed_ms(int elapsed_ms) {
-    if (elapsed_ms <= 0) return;
+void PMc_set_led_pulse_ms(PacemakerC* s, int ms) {
+  s->led_pulse_ms = (ms > 0 ? ms : 1);
+}
 
-    for (int i = 0; i < elapsed_ms; ++i) {
-        s_ms_counter++;
+void PMc_set_senses(PacemakerC* s, int AS_raw, int VS_raw) {
+  s->AS_raw = AS_raw;
+  s->VS_raw = VS_raw;
+  /* Optional sanity check: KEY2 press forces a print that confirms C-mode alive */
+  alt_u32 keys = IORD_ALTERA_AVALON_PIO_DATA(KEYS_BASE);
+  if ((keys & 0x04) == 0) { /* KEY2 active-low */
+    printf("[C-MODE] Sanity button (KEY2) pressed ~ C version confirmed running.\n");
+    fflush(stdout);
+  }
+}
 
-        if (s_ms_counter >= 1000) {   /* 1000 ms period */
-            s_ms_counter = 0;
-            s_AP_pulse   = 1;          /* one-tick AP pulse */
-        }
+/* One 1-ms algorithm step */
+static void PMc_tick_1ms(PacemakerC* s) {
+  /* Decrement timers and LED stretch */
+  dec_if_pos(&s->AVI); dec_if_pos(&s->AEI); dec_if_pos(&s->PVARP);
+  dec_if_pos(&s->VRP); dec_if_pos(&s->LRI); dec_if_pos(&s->URI);
+  dec_if_pos(&s->AP_led_ms); dec_if_pos(&s->VP_led_ms);
+
+  /* Gate senses by refractory */
+  s->AS = (s->AS_raw && s->PVARP == 0);
+  s->VS = (s->VS_raw && s->VRP   == 0);
+
+  /* Default outputs this ms */
+  s->AP = 0; s->VP = 0;
+
+  /* Intrinsic events first */
+  if (s->VS) {
+    s->VRP = VRP_VALUE;
+    s->AEI = AEI_VALUE;
+    s->LRI = LRI_VALUE;
+    s->URI = URI_VALUE;
+    s->seen_AS_since_last_V = 0;
+    s->AVI = 0;                /* inhibit any pending AVI-based VP */
+    s->vp_waiting_for_URI = 0; /* cancel pending VP */
+  }
+  if (s->AS) {
+    s->PVARP = PVARP_VALUE;
+    s->AVI   = AVI_VALUE;      /* start A->V interval */
+    s->seen_AS_since_last_V = 1;
+  }
+
+  /* Atrial pacing on AEI timeout (if no AS since last V) */
+  if (s->AEI == 0 && s->seen_AS_since_last_V == 0) {
+    s->AP = 1; s->AP_fired = 1; s->AP_led_ms = s->led_pulse_ms;
+    s->PVARP = PVARP_VALUE;
+    s->AVI   = AVI_VALUE;
+    s->seen_AS_since_last_V = 1;
+  }
+
+  /* Ventricular pacing desire */
+  {
+    int want_VP = 0;
+    if (s->AVI == 0 && s->seen_AS_since_last_V) want_VP = 1;
+    if (s->LRI == 0)                            want_VP = 1;
+
+    if (want_VP) {
+      if (s->URI == 0) {
+        s->VP = 1; s->VP_fired = 1; s->VP_led_ms = s->led_pulse_ms;
+        s->VRP = VRP_VALUE; s->AEI = AEI_VALUE; s->LRI = LRI_VALUE; s->URI = URI_VALUE;
+        s->AVI = 0; s->vp_waiting_for_URI = 0; s->seen_AS_since_last_V = 0;
+      } else {
+        s->vp_waiting_for_URI = 1;
+      }
     }
+
+    /* If we owe a VP but were blocked by URI, pace as soon as it expires */
+    if (s->vp_waiting_for_URI && s->URI == 0) {
+      s->VP = 1; s->VP_fired = 1; s->VP_led_ms = s->led_pulse_ms;
+      s->VRP = VRP_VALUE; s->AEI = AEI_VALUE; s->LRI = LRI_VALUE; s->URI = URI_VALUE;
+      s->AVI = 0; s->vp_waiting_for_URI = 0; s->seen_AS_since_last_V = 0;
+    }
+  }
+
+  /* Raw senses are one-ms pulses; clear after consumption */
+  s->AS_raw = 0; s->VS_raw = 0;
 }
 
-/* -------------------------------------------------
-   Poll outputs and clear one-shots
-   ------------------------------------------------- */
-void PMc_poll_and_clear_pulses(int *AP_pulse, int *VP_pulse) {
-    if (AP_pulse) *AP_pulse = s_AP_pulse;
-    if (VP_pulse) *VP_pulse = 0;
-    s_AP_pulse = 0;
+void PMc_run_for_elapsed_ms(PacemakerC* s) {
+  while (s_ms_ticks) {
+    PMc_tick_1ms(s);
+    s_ms_ticks--;
+  }
 }
+
+void PMc_poll_and_clear_pulses(PacemakerC* s, int* AP_any, int* VP_any) {
+  if (AP_any) *AP_any = s->AP_fired;
+  if (VP_any) *VP_any = s->VP_fired;
+  s->AP_fired = 0;
+  s->VP_fired = 0;
+}
+
+int PMc_led_AP_on(const PacemakerC* s) { return (s->AP_led_ms > 0); }
+int PMc_led_VP_on(const PacemakerC* s) { return (s->VP_led_ms > 0); }

@@ -1,0 +1,77 @@
+/*
+ * Pacemaker_C.c — DEBUG: AP after AEI ms from any V event (VS or VP)
+ * -------------------------------------------------------------------
+ * - Any ventricular event arms/restarts AEI for AEI_VALUE ms.
+ * - When AEI expires, emit a one-tick AP.
+ * - No real pacing of V here; VP path is scaffolded for future use.
+ */
+
+#include <stdint.h>
+#include "timing.h"       /* AEI_VALUE from assignment */
+#include "Pacemaker_C.h"  /* public API expected by main.c */
+
+/* ---------------- Module-local state ---------------- */
+static int s_aei_ms       = -1;   /* -1 = idle, >=0 = counting down */
+static int s_AP_one_shot  = 0;    /* latched until polled */
+static int s_last_VP_out  = 0;    /* set to 1 in a step where we would output VP (not used here) */
+
+/* Latched one-tick inputs for current outer loop */
+static int s_AS_in = 0;
+static int s_VS_in = 0;
+
+/* ---------------- Public API ---------------- */
+int PMc_init(void){
+    s_aei_ms      = -1;
+    s_AP_one_shot = 0;
+    s_last_VP_out = 0;
+    s_AS_in = 0;
+    s_VS_in = 0;
+    return 0;
+}
+
+int PMc_start_1ms_alarm(void){
+    /* No ISR here; main passes elapsed ms. */
+    return 0;
+}
+
+/* Latch external one-tick senses (called once per loop). */
+void PMc_set_senses(int AS_pulse, int VS_pulse){
+    s_AS_in = (AS_pulse != 0);
+    s_VS_in = (VS_pulse != 0);
+}
+
+/* Advance by N milliseconds at 1 ms granularity. */
+void PMc_run_for_elapsed_ms(int elapsed_ms){
+    if (elapsed_ms <= 0) return;
+
+    /* Any ventricular event (natural VS or prior-step VP) (re)arms AEI. */
+    if (s_VS_in || s_last_VP_out){
+        s_aei_ms = AEI_VALUE;     /* restart AEI countdown */
+    }
+
+    /* Consume time one millisecond at a time. */
+    for (int i = 0; i < elapsed_ms; ++i){
+        if (s_aei_ms > 0){
+            s_aei_ms -= 1;
+            if (s_aei_ms == 0){
+                /* AEI expired → fire AP once, then disarm. */
+                s_AP_one_shot = 1;
+                s_aei_ms = -1;
+            }
+        }
+    }
+
+    /* Clear one-tick inputs; we’ve consumed them for this step. */
+    s_AS_in = 0;
+    s_VS_in = 0;
+
+    /* This debug module never produces VP; keep marker clear. */
+    s_last_VP_out = 0;
+}
+
+/* Report and clear pulses created since last poll. */
+void PMc_poll_and_clear_pulses(int *AP_pulse, int *VP_pulse){
+    if (AP_pulse) *AP_pulse = s_AP_one_shot;
+    if (VP_pulse) *VP_pulse = 0;  /* no VP generated here */
+    s_AP_one_shot = 0;
+}
