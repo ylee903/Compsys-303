@@ -161,6 +161,7 @@ static void app_cmode_step(App* a, int uart_enabled){
   if (!a->c_booted){
     PMc_init(&a->c);
     PMc_set_led_pulse_ms(&a->c, 25);
+    if (PMc_start_1ms_alarm() < 0) printf("[err] failed to start 1ms alarm\n");
     a->c_booted = 1;
   }
 

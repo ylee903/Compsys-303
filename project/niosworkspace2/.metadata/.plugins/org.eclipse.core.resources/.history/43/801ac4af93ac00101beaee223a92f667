@@ -10,7 +10,7 @@ static volatile alt_u32 s_ms_ticks = 0;
 static alt_alarm s_alarm;
 
 static void dec_if_pos(int* t);
-static int PMc_1ms_tick_isr(void);
+static void PMc_1ms_tick_isr(void);
 
 void PMc_init(PacemakerC* s);
 
@@ -49,10 +49,6 @@ static void PMc_tick_1ms(PacemakerC* s) {
 
   if (did_atrium_event_happen)
   {
-    if (s->AS)
-    {
-      printf("[C-MODE] AS event detected.\n");
-    }
     s->AP = 0; /* since AP is read from main, clear AP after consumption */
     if (!PMc_timer_is_running(&s->PVARP)) {
       PMc_start_timer(&s->AVI, &s->AVI_armed, AVI_VALUE);
@@ -65,10 +61,6 @@ static void PMc_tick_1ms(PacemakerC* s) {
   int did_ventricle_event_happen = (s->VS || s->VP);
   if (did_ventricle_event_happen)
   {
-    if (s->VS)
-    {
-      printf("[C-MODE] VS event detected.\n");
-    }
     s->VP = 0; /* since VP is read from main, clear VP after consumption */
     if (!PMc_timer_is_running(&s->VRP)) {
       PMc_start_timer(&s->PVARP, NULL, PVARP_VALUE);
@@ -113,8 +105,6 @@ static void PMc_tick_1ms(PacemakerC* s) {
 
     PMc_fire_VP(s);
   }
-
-  s->AS = s->VS = 0; // Because reasons
 }
 
 static void dec_if_pos(int* t) { if (*t > 0) (*t)--; }
@@ -130,8 +120,8 @@ void PMc_set_led_pulse_ms(PacemakerC* s, int ms) {
 }
 
 void PMc_set_senses(PacemakerC* s, int AS, int VS) {
-  if (AS) s->AS = 1;
-  if (VS) s->VS = 1;
+  s->AS = AS;
+  s->VS = VS;
   /* Optional sanity check: KEY2 press forces a print that confirms C-mode alive */
   alt_u32 keys = IORD_ALTERA_AVALON_PIO_DATA(KEYS_BASE);
   if ((keys & 0x04) == 0) { /* KEY2 active-low */

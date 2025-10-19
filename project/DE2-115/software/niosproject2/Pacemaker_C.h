@@ -11,8 +11,6 @@ extern "C" {
 /* Hand-written DDD pacemaker state for C mode (SW0 = 1) */
 typedef struct {
   /* Inputs for current ms (raw/ungated). Caller sets these before stepping. */
-  int AS_raw;
-  int VS_raw;
 
   /* Gated senses (after refractory) */
   int AS;
@@ -22,16 +20,9 @@ typedef struct {
   int AP;
   int VP;
 
-  /* Sticky flags to report if a pace happened since last poll */
-  int AP_fired;
-  int VP_fired;
-
   /* Timers (countdown, ms; 0 = expired/not running) */
   int AVI, AEI, PVARP, VRP, LRI, URI;
-
-  /* Control flags */
-  int seen_AS_since_last_V;
-  int vp_waiting_for_URI;
+  int AVI_armed, AEI_armed, LRI_armed;
 
   /* LED stretch (visual only) */
   int led_pulse_ms;  /* default 25 ms */
