@@ -1,0 +1,206 @@
+#include <string.h>
+#include <stdio.h>
+#include <sys/alt_alarm.h>
+#include <altera_avalon_pio_regs.h>
+#include "Pacemaker_C.h"
+#include <system.h>
+
+/* Module-local 1ms ticker */
+static volatile alt_u32 s_ms_ticks = 0;
+static alt_alarm s_alarm;
+
+static void dec_if_pos(int* t);
+static int PMc_1ms_tick_isr(void);
+
+void PMc_init(PacemakerC* s);
+
+void PMc_set_led_pulse_ms(PacemakerC* s, int ms);
+
+void PMc_set_senses(PacemakerC* s, int AS_raw, int VS_raw);
+
+void PMc_run_for_elapsed_ms(PacemakerC* s);
+
+void PMc_poll_and_clear_pulses(PacemakerC* s, int* AP_any, int* VP_any);
+
+int PMc_led_AP_on(const PacemakerC* s);
+int PMc_led_VP_on(const PacemakerC* s);
+
+void PMc_tick_timers(PacemakerC* s);
+
+void PMc_start_timer(int* timer, int* arming, int value);
+void PMc_stop_timer(int* timer);
+int PMc_timer_is_running(const int* timer);
+int PMc_timer_finished_whilst_armed(const int* timer, const int* arming);
+void PMc_disarm_timer(int* arming);
+
+void PMc_fire_AP(PacemakerC* s);
+void PMc_fire_VP(PacemakerC* s);
+
+/* Main logic based on 1ms long ticks */
+static void PMc_tick_1ms(PacemakerC* s) {
+
+  // Call function to Tick all timers down 1ms
+  PMc_tick_timers(s);
+
+  // Check for events:
+  // v
+
+  int did_atrium_event_happen = (s->AS || s->AP);
+
+  if (did_atrium_event_happen)
+  {
+    if (s->AS)
+    {
+      printf("[C-MODE] AS event detected.\n");
+    }
+    s->AP = 0; /* since AP is read from main, clear AP after consumption */
+    if (!PMc_timer_is_running(&s->PVARP)) {
+      PMc_start_timer(&s->AVI, &s->AVI_armed, AVI_VALUE);
+      
+      PMc_stop_timer(&s->AEI);
+      PMc_disarm_timer(&s->AEI_armed);
+    }
+  }
+
+  int did_ventricle_event_happen = (s->VS || s->VP);
+  if (did_ventricle_event_happen)
+  {
+    if (s->VS)
+    {
+      printf("[C-MODE] VS event detected.\n");
+    }
+    s->VP = 0; /* since VP is read from main, clear VP after consumption */
+    if (!PMc_timer_is_running(&s->VRP)) {
+      PMc_start_timer(&s->PVARP, NULL, PVARP_VALUE);
+      PMc_start_timer(&s->VRP, NULL, VRP_VALUE);
+      PMc_start_timer(&s->AEI, &s->AEI_armed, AEI_VALUE);
+      PMc_start_timer(&s->LRI, &s->LRI_armed, LRI_VALUE);
+      PMc_start_timer(&s->URI, NULL, URI_VALUE);
+
+      PMc_stop_timer(&s->AVI); /* AVI cancelled after VS/VP */
+      PMc_disarm_timer(&s->AVI_armed);
+
+      PMc_start_timer(&s->LRI, &s->LRI_armed, LRI_VALUE);
+    }
+  }
+
+  // ^
+  // Check for events
+  // Check for timers expiring
+  // v
+
+  if (PMc_timer_finished_whilst_armed(&s->AVI, &s->AVI_armed)) {
+    if (PMc_timer_is_running(&s->URI)) {
+      /* Although AVI Expired, URI is still running so we leave AVI armed (i.e. do nothing) */
+    } else {
+      /* AVI expired whilst armed and URI not running, meaning we need to trigger a VP */
+      PMc_disarm_timer(&s->AVI_armed);
+
+      PMc_fire_VP(s);
+    }
+  }
+
+  if (PMc_timer_finished_whilst_armed(&s->AEI, &s->AEI_armed)) {
+    /* AEI expired whilst armed, meaning we need to trigger an AP */
+    PMc_disarm_timer(&s->AEI_armed);
+    
+    PMc_fire_AP(s);
+  }
+
+  if (PMc_timer_finished_whilst_armed(&s->LRI, &s->LRI_armed)) {
+    /* LRI expired whilst armed, meaning we need to trigger a VP */
+    PMc_disarm_timer(&s->LRI_armed);
+
+    PMc_fire_VP(s);
+  }
+
+  s->AS = s->VS = 0; // Because reasons
+}
+
+static void dec_if_pos(int* t) { if (*t > 0) (*t)--; }
+
+void PMc_init(PacemakerC* s) {
+  memset(s, 0, sizeof(*s));
+  s->led_pulse_ms = 25;   // todo: figure out if anything else needs to be called to flash led
+  alt_alarm_start(&s_alarm, 1, PMc_1ms_tick_isr, NULL);
+}
+
+void PMc_set_led_pulse_ms(PacemakerC* s, int ms) {
+  s->led_pulse_ms = (ms > 0 ? ms : 1);
+}
+
+void PMc_set_senses(PacemakerC* s, int AS, int VS) {
+  if (AS) s->AS = 1;
+  if (VS) s->VS = 1;
+  /* Optional sanity check: KEY2 press forces a print that confirms C-mode alive */
+  alt_u32 keys = IORD_ALTERA_AVALON_PIO_DATA(KEYS_BASE);
+  if ((keys & 0x04) == 0) { /* KEY2 active-low */
+    printf("[C-MODE] Sanity button (KEY2) pressed ~ C version confirmed running.\n");
+    fflush(stdout);
+  }
+}
+
+// Add s_ms_ticks +1 every 1ms via isr
+static int PMc_1ms_tick_isr(void) {
+  s_ms_ticks++;
+  return 1; // Returning 1 keeps the alarm active (so it keeps firing)
+}
+
+// When s_ms_ticks is above zero, output a tick signal, and decrement s_ms_ticks
+void PMc_run_for_elapsed_ms(PacemakerC* s) {
+  while (s_ms_ticks > 0) {
+    PMc_tick_1ms(s);
+    s_ms_ticks--;
+  }
+}
+
+void PMc_poll_and_clear_pulses(PacemakerC* s, int* AP_any, int* VP_any) {
+  if (AP_any) *AP_any = s->AP;
+  if (VP_any) *VP_any = s->VP;
+}
+
+int PMc_led_AP_on(const PacemakerC* s) { return (s->AP_led_ms > 0); }
+int PMc_led_VP_on(const PacemakerC* s) { return (s->VP_led_ms > 0); }
+
+void PMc_tick_timers(PacemakerC* s) {
+  dec_if_pos(&s->PVARP);
+  dec_if_pos(&s->VRP);
+  dec_if_pos(&s->AEI);
+  dec_if_pos(&s->AVI);
+  dec_if_pos(&s->LRI);
+  dec_if_pos(&s->URI);
+  dec_if_pos(&s->AP_led_ms);
+  dec_if_pos(&s->VP_led_ms);
+}
+
+void PMc_start_timer(int* timer, int* arming, int value) {
+  *timer = value;
+  if (arming) *arming = 1;
+}
+
+void PMc_stop_timer(int* timer) {
+  *timer = 0;
+}
+
+int PMc_timer_is_running(const int* timer) {
+  return (*timer > 0);
+}
+
+int PMc_timer_finished_whilst_armed(const int* timer, const int* arming) {
+  return ((*timer == 0) && (*arming != 0));
+}
+
+void PMc_disarm_timer(int* arming) {
+  *arming = 0;
+}
+
+
+void PMc_fire_AP(PacemakerC* s) {
+  s->AP = 1; 
+  s->AP_led_ms = s->led_pulse_ms;
+}
+
+void PMc_fire_VP(PacemakerC* s) {
+  s->VP = 1; 
+  s->VP_led_ms = s->led_pulse_ms;
+}
